@@ -30,30 +30,6 @@ export const baseParameters = z.object({
   repo: z.string().describe("GitHub repository to work in (owner/name, e.g. acme/my-app)"),
 });
 
-// ---------------------------------------------------------------------------
-// VerificationResponse + helper
-// ---------------------------------------------------------------------------
-
-/**
- * The return type of a `verify()` method. Currently a plain string prompt,
- * but typed separately so it can evolve without touching every subclass.
- */
-export type VerificationResponse = string;
-
-/**
- * Wrap verification instructions in a `VerificationResponse`.
- * Appends a structured VERDICT directive so the runner can parse pass/fail
- * from the agent's output and decide whether to retry `execute()`.
- *
- * @param instructions - The verification prompt to send to the agent.
- */
-export function verify(instructions: string): VerificationResponse {
-  return `When every check below passes, output VERDICT: PASS on its own line.
-If any check fails, output VERDICT: FAIL followed by a concise explanation.
-Output the VERDICT line as the very last thing you write — do not stop without it.
-
-${instructions}`;
-}
 
 // ---------------------------------------------------------------------------
 // MissionConfig — static descriptor attached to each Mission subclass
@@ -186,7 +162,7 @@ export abstract class Mission {
    * Run after the main phase: assert outcomes, run tests, confirm criteria.
    * Return `undefined` to skip this phase (default).
    */
-  verify(): VerificationResponse | undefined {
+  verify(): string | undefined {
     return undefined;
   }
 
@@ -316,14 +292,16 @@ interface VerifyResult {
 
 /**
  * Parse a `VERDICT: PASS` or `VERDICT: FAIL` line from agent output.
- * Defaults to passed when no verdict is found to avoid false blocks.
+ * Defaults to FAIL when no verdict is found — the agent must explicitly
+ * confirm success; silence is treated as an unresolved verification.
  *
  * @param output - Full text output captured from the verify phase.
  */
 function parseVerifyResult(output: string): VerifyResult {
+  if (/VERDICT:\s*PASS/i.test(output)) return { passed: true };
   const failMatch = output.match(/VERDICT:\s*FAIL[:\s]+([\s\S]*)/i);
   if (failMatch) return { passed: false, feedback: failMatch[1].trim() };
-  return { passed: true };
+  return { passed: false, feedback: "no VERDICT was produced" };
 }
 
 /**
@@ -486,7 +464,10 @@ export async function runMission(mission: MissionRun, ohmCwd: string): Promise<v
     if (!mission.verify) break;
 
     console.log(`[ohmu] [${mission.label}] phase: verify`);
-    const verifyOutput = await spawnPhase("verify", mission.verify, cwd, mission.skills);
+    const verifyPrompt = `${mission.verify}
+
+When all checks pass output VERDICT: PASS on its own line. Otherwise output VERDICT: FAIL followed by a concise explanation. Default to VERDICT: FAIL if uncertain.`;
+    const verifyOutput = await spawnPhase("verify", verifyPrompt, cwd, mission.skills);
     console.log(`[ohmu] [${mission.label}] phase: verify — done`);
 
     if (mission.retrospect) {

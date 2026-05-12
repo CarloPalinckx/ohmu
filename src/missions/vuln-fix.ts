@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { Mission, verify, type VerificationResponse } from "../mission.js";
+import { Mission } from "../mission.js";
 
 export default class VulnFix extends Mission {
   public static config = {
@@ -52,7 +52,7 @@ ${description}
   /**
    * Review the fix: check commits, perform a code review, and run tests.
    */
-  verify(): VerificationResponse {
+  verify(): string {
     return verify(`Review the work done in this mission:
       1. Run \`git log --oneline -5\` to see what was changed.
       2. Run \`git diff main\` and check that no unrelated logic was altered.
