@@ -199,13 +199,23 @@ export abstract class Mission {
    * @param transcript - Full text output captured from the preceding phase.
    */
   retrospect(transcript: string): string | undefined {
-    return `You have just completed a step. Here is the transcript of what just happened:
+    return `You have just completed a phase. Here is the transcript:
 
 <transcript>
 ${transcript}
 </transcript>
 
-Identify where the step took more effort than needed and use the /write-retrospective skill to document how to improve the effectiveness of this type of mission in the future.`;
+Review the transcript and identify any steps that took more effort than necessary.
+Append a short entry to a file called OHMU_RETROSPECTIVE.md in the current directory using this format:
+
+---
+## <short title describing what happened>
+
+**What took extra effort:** <describe the inefficiency>
+**How to improve:** <concrete suggestion for future runs>
+---
+
+If the transcript shows no meaningful inefficiency, skip writing the file.`;
   }
 }
 
