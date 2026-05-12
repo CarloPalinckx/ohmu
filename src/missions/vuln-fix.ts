@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { Mission } from "../mission.js";
 
-export default class VulnFix extends Mission {
+export default class VulnFix extends Mission<z.infer<typeof VulnFix.config.parameters>> {
   public static config = {
     name: 'vuln-fix',
     description: "Locate and patch a security vulnerability identified by CVE or CWE.",
@@ -16,7 +16,7 @@ export default class VulnFix extends Mission {
    * Set up the working environment and ensure test coverage exists before any fix is applied.
    */
   prepare(): string {
-    const { description } = this.parameters as z.infer<typeof VulnFix.config.parameters>;
+    const { description } = this.parameters;
     return `
       **IMPORTANT: Do not implement any fixes for the vulnerability yet**.
 
@@ -35,7 +35,7 @@ ${description}
    * Implement the fix for the identified security vulnerability.
    */
   execute(): string {
-    const { description } = this.parameters as z.infer<typeof VulnFix.config.parameters>;
+    const { description } = this.parameters;
     return `
       It is your task to fix a security vulnerability in the codebase that has been reported by a scanning tool.
       Follow these steps:

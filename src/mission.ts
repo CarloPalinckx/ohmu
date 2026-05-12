@@ -95,7 +95,7 @@ export interface MissionRun {
 /**
  * Type alias for a Mission subclass constructor (with its static `config`).
  */
-export type MissionConstructor = (new (params: Record<string, unknown>) => Mission) & {
+export type MissionConstructor = (new (params: Record<string, unknown>) => Mission<Record<string, unknown>>) & {
   config: MissionConfig;
 };
 
@@ -110,7 +110,7 @@ export type MissionConstructor = (new (params: Record<string, unknown>) => Missi
  * the `mission:` field in the issue frontmatter.
  *
  * @example
- * export default class MyMission extends Mission {
+ * export default class MyMission extends Mission<z.infer<typeof MyMission.config.parameters>> {
  *   static config = {
  *     name: 'my-mission',
  *     description: 'Does something useful.',
@@ -121,7 +121,7 @@ export type MissionConstructor = (new (params: Record<string, unknown>) => Missi
  *   execute() { return `Do something with ${this.parameters.foo}`; }
  * }
  */
-export abstract class Mission {
+export abstract class Mission<TParams extends Record<string, unknown> = Record<string, unknown>> {
   /**
    * Static descriptor for this mission type.
    * Subclasses must define this with at minimum `name` and `description`.
@@ -130,12 +130,12 @@ export abstract class Mission {
 
   /**
    * Parsed issue-frontmatter parameters for this mission instance.
-   * Typed as `Record<string, unknown>`; actual shape is determined by
-   * `static config.parameters` (a Zod schema) on the subclass.
+   * The type is inferred from the subclass's `static config.parameters` Zod schema
+   * via the `TParams` type parameter — no manual casting required in subclasses.
    */
-  protected readonly parameters: Record<string, unknown>;
+  protected readonly parameters: TParams;
 
-  constructor(params: Record<string, unknown>) {
+  constructor(params: TParams) {
     this.parameters = params;
   }
 
