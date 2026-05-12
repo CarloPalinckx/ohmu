@@ -48,11 +48,11 @@ export type VerificationResponse = string;
  * @param instructions - The verification prompt to send to the agent.
  */
 export function verify(instructions: string): VerificationResponse {
-  return `${instructions}
+  return `When every check below passes, output VERDICT: PASS on its own line.
+If any check fails, output VERDICT: FAIL followed by a concise explanation.
+Output the VERDICT line as the very last thing you write — do not stop without it.
 
-After completing your review, output one of the following on its own line:
-- VERDICT: PASS  — it is safe to continue
-- VERDICT: FAIL  — followed by a concise explanation of what must be fixed`;
+${instructions}`;
 }
 
 // ---------------------------------------------------------------------------
