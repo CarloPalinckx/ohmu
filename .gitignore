@@ -4,3 +4,5 @@
 .local/
 .config/gh/
 node_modules/
+workspaces
+.env

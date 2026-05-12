@@ -34,3 +34,7 @@ Ready → (agent picks up) → In Progress → PR opened → In Review → Done
 
 If the PR receives review feedback the agent will automatically address it and push a new commit.
 
+
+### Example conversation (current version)
+
+ https://pi.dev/session/#166f63ff6b60dd04ac460e4e65315c43
