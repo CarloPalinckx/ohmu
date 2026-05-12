@@ -1,0 +1,4 @@
+Dockerfile
+.dockerignore
+.bash_history
+.pi/agent/sessions/

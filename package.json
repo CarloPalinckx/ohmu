@@ -1,0 +1,15 @@
+{
+  "name": "@ohm/coding-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "generate-templates": "tsx src/scripts/generate-templates.ts"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "tsx": "^4",
+    "zod": "^4.4.3"
+  }
+}

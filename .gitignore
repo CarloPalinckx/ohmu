@@ -1,0 +1,6 @@
+.npm/
+.pi/agent/auth.json
+.pi/agent/sessions/
+.local/
+.config/gh/
+node_modules/

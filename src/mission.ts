@@ -1,0 +1,502 @@
+import fs from "node:fs/promises";
+import nodePath from "node:path";
+import { pathToFileURL } from "node:url";
+import { z } from "zod";
+
+import {
+  AuthStorage,
+  createAgentSession,
+  DefaultResourceLoader,
+  getAgentDir,
+  ModelRegistry,
+  SessionManager,
+  type Skill,
+} from "@earendil-works/pi-coding-agent";
+
+// ---------------------------------------------------------------------------
+// VerificationResponse + helper
+// ---------------------------------------------------------------------------
+
+/**
+ * The return type of a `verify()` method. Currently a plain string prompt,
+ * but typed separately so it can evolve without touching every subclass.
+ */
+export type VerificationResponse = string;
+
+/**
+ * Wrap verification instructions in a `VerificationResponse`.
+ * Appends a structured VERDICT directive so the runner can parse pass/fail
+ * from the agent's output and decide whether to retry `execute()`.
+ *
+ * @param instructions - The verification prompt to send to the agent.
+ */
+export function verify(instructions: string): VerificationResponse {
+  return `${instructions}
+
+After completing your review, output one of the following on its own line:
+- VERDICT: PASS  — it is safe to continue
+- VERDICT: FAIL  — followed by a concise explanation of what must be fixed`;
+}
+
+// ---------------------------------------------------------------------------
+// MissionConfig — static descriptor attached to each Mission subclass
+// ---------------------------------------------------------------------------
+
+export interface MissionConfig {
+  /** Matches the `mission:` field in issue frontmatter (e.g. "vuln-fix"). */
+  name: string;
+  /** One-line description shown in logs. */
+  description: string;
+  /** Skill names or paths made available for every phase of this mission. */
+  skills?: string[];
+  /** Zod schema describing the issue-frontmatter variables this mission requires. */
+  parameters?: z.AnyZodObject;
+}
+
+// ---------------------------------------------------------------------------
+// MissionRun — the assembled, ready-to-execute unit of work
+// ---------------------------------------------------------------------------
+
+export interface MissionRun {
+  /** Short label for logging. */
+  label: string;
+
+  /**
+   * Lifecycle phase run before the main instructions.
+   * Use this to set up the environment, install dependencies,
+   * validate preconditions, etc.
+   */
+  prepare?: string;
+
+  /** Full instructions the agent will receive as its goal. */
+  instructions: string;
+
+  /**
+   * Lifecycle phase run after the main instructions.
+   * Use this to assert outcomes, run tests, or confirm the work
+   * meets acceptance criteria.
+   */
+  verify?: string;
+
+  /**
+   * Called after every lifecycle phase with that phase's transcript.
+   * Returns the prompt to send to the retrospect agent, or `undefined` to skip.
+   */
+  retrospect?: (transcript: string) => string | undefined;
+
+  /**
+   * Skills to make available during every lifecycle phase of this mission.
+   * Each entry is a skill name (auto-discovered) or a path to a skill
+   * directory. When omitted, all auto-discovered skills are available.
+   */
+  skills?: string[];
+}
+
+// ---------------------------------------------------------------------------
+// Mission — base class, subclassed in src/missions/<name>.ts
+// ---------------------------------------------------------------------------
+
+/**
+ * Type alias for a Mission subclass constructor (with its static `config`).
+ */
+export type MissionConstructor = (new (params: Record<string, unknown>) => Mission) & {
+  config: MissionConfig;
+};
+
+/**
+ * Base class for all mission types.
+ *
+ * Create a subclass in `src/missions/<name>.ts` and export it as the default
+ * export — it will be auto-discovered and instantiated at runtime with no
+ * manual registration required.
+ *
+ * Define a `static config` object on your subclass — its `name` must match
+ * the `mission:` field in the issue frontmatter.
+ *
+ * @example
+ * export default class MyMission extends Mission {
+ *   static config = {
+ *     name: 'my-mission',
+ *     description: 'Does something useful.',
+ *     skills: [],
+ *     parameters: z.object({ foo: z.string() }),
+ *   };
+ *
+ *   execute() { return `Do something with ${this.parameters.foo}`; }
+ * }
+ */
+export abstract class Mission {
+  /**
+   * Static descriptor for this mission type.
+   * Subclasses must define this with at minimum `name` and `description`.
+   */
+  static config: MissionConfig;
+
+  /**
+   * Parsed issue-frontmatter parameters for this mission instance.
+   * Typed as `Record<string, unknown>`; actual shape is determined by
+   * `static config.parameters` (a Zod schema) on the subclass.
+   */
+  protected readonly parameters: Record<string, unknown>;
+
+  constructor(params: Record<string, unknown>) {
+    this.parameters = params;
+  }
+
+  /**
+   * Short label used in logs.
+   * Defaults to the subclass's `config.name`.
+   */
+  label(): string {
+    return (this.constructor as typeof Mission).config?.name ?? 'unknown';
+  }
+
+  /**
+   * Run before the main phase: install deps, validate preconditions, etc.
+   * Return `undefined` to skip this phase (default).
+   */
+  prepare(): string | undefined {
+    return undefined;
+  }
+
+  /** The main agent instructions for this mission. */
+  abstract execute(): string;
+
+  /**
+   * Run after the main phase: assert outcomes, run tests, confirm criteria.
+   * Return `undefined` to skip this phase (default).
+   */
+  verify(): VerificationResponse | undefined {
+    return undefined;
+  }
+
+  /**
+   * Run after every lifecycle phase (prepare, execute, verify).
+   * Receives the full transcript of the phase that just completed so the
+   * agent can ground its reflection in what actually happened.
+   * Return `undefined` to skip this phase (default).
+   *
+   * @param transcript - Full text output captured from the preceding phase.
+   */
+  retrospect(transcript: string): string | undefined {
+    return `You have just completed a step. Here is the transcript of what just happened:
+
+<transcript>
+${transcript}
+</transcript>
+
+Identify where the step took more effort than needed and use the /write-retrospective skill to document how to improve the effectiveness of this type of mission in the future.`;
+  }
+}
+
+/**
+ * Instantiate a Mission subclass with the given params and assemble a `MissionRun`.
+ *
+ * When the subclass declares `config.parameters` (a Zod schema), the raw params
+ * are parsed through it before the instance is constructed. This validates required
+ * fields and strips unknown keys, throwing a `ZodError` on failure.
+ */
+export function assembleMission(Cls: MissionConstructor, params: Record<string, string>): MissionRun {
+  const schema = Cls.config?.parameters;
+  const validated = schema ? schema.parse(params) : params;
+  const mission = new Cls(validated);
+  return {
+    label:       mission.label(),
+    prepare:     mission.prepare(),
+    instructions: mission.execute(),
+    verify:      mission.verify(),
+    retrospect:  (transcript) => mission.retrospect(transcript),
+    skills:      Cls.config?.skills,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Auto-loader — discovers all Mission subclasses from src/missions/
+// ---------------------------------------------------------------------------
+
+function isMissionClass(value: unknown): value is MissionConstructor {
+  return (
+    typeof value === "function" &&
+    value.prototype instanceof Mission &&
+    "config" in value
+  );
+}
+
+let missionCache: MissionConstructor[] | undefined;
+
+/** Load (and cache) every Mission subclass exported from src/missions/. */
+export async function loadMissions(): Promise<MissionConstructor[]> {
+  if (missionCache) return missionCache;
+
+  const missionsDir = nodePath.join(
+    nodePath.dirname(new URL(import.meta.url).pathname),
+    "missions",
+  );
+
+  let files: string[];
+  try {
+    files = await fs.readdir(missionsDir);
+  } catch {
+    // No missions folder yet — return empty.
+    return (missionCache = []);
+  }
+
+  const definitions: MissionConstructor[] = [];
+
+  for (const file of files) {
+    if (!file.endsWith(".ts") && !file.endsWith(".js")) continue;
+
+    const mod: Record<string, unknown> = await import(
+      pathToFileURL(nodePath.join(missionsDir, file)).href
+    );
+
+    // Prefer the default export; fall back to any named export that matches.
+    const candidates = [mod["default"], ...Object.values(mod)];
+    for (const candidate of candidates) {
+      if (isMissionClass(candidate)) {
+        definitions.push(candidate);
+        break;
+      }
+    }
+  }
+
+  return (missionCache = definitions);
+}
+
+/** Find a Mission subclass constructor by its `config.name` field. */
+export async function findMission(name: string): Promise<MissionConstructor | undefined> {
+  const definitions = await loadMissions();
+  return definitions.find((Cls) => Cls.config?.name === name);
+}
+
+// ---------------------------------------------------------------------------
+// Mission runner
+// ---------------------------------------------------------------------------
+
+type Phase = "prepare" | "run" | "verify" | "retrospect";
+
+/** Parsed result from a verify-phase agent run. */
+interface VerifyResult {
+  passed: boolean;
+  /** Present when `passed` is false; contains the agent's explanation. */
+  feedback?: string;
+}
+
+/**
+ * Parse a `VERDICT: PASS` or `VERDICT: FAIL` line from agent output.
+ * Defaults to passed when no verdict is found to avoid false blocks.
+ *
+ * @param output - Full text output captured from the verify phase.
+ */
+function parseVerifyResult(output: string): VerifyResult {
+  const failMatch = output.match(/VERDICT:\s*FAIL[:\s]+([\s\S]*)/i);
+  if (failMatch) return { passed: false, feedback: failMatch[1].trim() };
+  return { passed: true };
+}
+
+/**
+ * Spawn an isolated agent session for a single lifecycle phase.
+ *
+ * Every call creates a completely fresh session — new AuthStorage, ResourceLoader,
+ * ModelRegistry, and an in-memory SessionManager with no prior conversation history.
+ * Phases share only the filesystem (cwd), which is intentional: prepare stages
+ * the environment for execute, and execute's output is what verify inspects.
+ *
+ * @param phase        - Label used for logging.
+ * @param instructions - The full prompt the agent receives as its goal.
+ * @param cwd          - Working directory the agent operates in.
+ * @param skills       - Skill names / paths to make available, or undefined for all.
+ * @returns            The full text output produced by the agent.
+ */
+async function spawnPhase(
+  phase: Phase,
+  instructions: string,
+  cwd: string,
+  skills: string[] | undefined,
+): Promise<string> {
+  const authStorage = AuthStorage.create();
+  const agentDir = getAgentDir();
+
+  const loader = new DefaultResourceLoader({
+    cwd,
+    agentDir,
+    ...(skills !== undefined && {
+      skillsOverride: async (current) => ({
+        skills: await resolveSkills(skills, current.skills),
+        diagnostics: current.diagnostics,
+      }),
+    }),
+  });
+  await loader.reload();
+
+  const { session } = await createAgentSession({
+    cwd,
+    agentDir,
+    resourceLoader: loader,
+    sessionManager: SessionManager.inMemory(),
+    authStorage,
+    modelRegistry: ModelRegistry.create(authStorage),
+  });
+
+  let output = "";
+
+  const unsub = session.subscribe((event) => {
+    if (
+      event.type === "message_update" &&
+      event.assistantMessageEvent.type === "text_delta"
+    ) {
+      process.stdout.write(event.assistantMessageEvent.delta);
+      output += event.assistantMessageEvent.delta;
+    }
+  });
+
+  try {
+    await session.prompt(instructions);
+  } finally {
+    unsub();
+    session.dispose();
+  }
+
+  return output;
+}
+
+/** Maximum number of execute→verify cycles before giving up. */
+const MAX_EXECUTE_RETRIES = 3;
+
+export async function runMission(mission: MissionRun, cwd: string): Promise<void> {
+  console.log(`[ohmu] mission: ${mission.label}`);
+
+  if (mission.skills !== undefined) {
+    console.log(
+      `[ohmu] [${mission.label}] skills: ${mission.skills.length ? mission.skills.join(", ") : "(none)"}`,
+    );
+  }
+
+  if (mission.prepare) {
+    console.log(`[ohmu] [${mission.label}] phase: prepare`);
+    const prepareTranscript = await spawnPhase("prepare", mission.prepare, cwd, mission.skills);
+    console.log(`[ohmu] [${mission.label}] phase: prepare — done`);
+    if (mission.retrospect) {
+      const prompt = mission.retrospect(prepareTranscript);
+      if (prompt) await spawnPhase("retrospect", prompt, cwd, mission.skills);
+    }
+  }
+
+  // Execute → verify loop. On a failed verify the feedback is prepended to
+  // the execute instructions and the cycle repeats up to MAX_EXECUTE_RETRIES.
+  let feedback: string | undefined;
+
+  for (let attempt = 1; attempt <= MAX_EXECUTE_RETRIES; attempt++) {
+    const executePrompt = feedback
+      ? `The previous attempt was rejected during verification. Address the following feedback before proceeding:\n\n${feedback}\n\n---\n\n${mission.instructions}`
+      : mission.instructions;
+
+    console.log(`[ohmu] [${mission.label}] phase: execute (attempt ${attempt}/${MAX_EXECUTE_RETRIES})`);
+    const executeTranscript = await spawnPhase("run", executePrompt, cwd, mission.skills);
+    console.log(`[ohmu] [${mission.label}] phase: execute — done`);
+
+    if (mission.retrospect) {
+      const prompt = mission.retrospect(executeTranscript);
+      if (prompt) await spawnPhase("retrospect", prompt, cwd, mission.skills);
+    }
+
+    if (!mission.verify) break;
+
+    console.log(`[ohmu] [${mission.label}] phase: verify`);
+    const verifyOutput = await spawnPhase("verify", mission.verify, cwd, mission.skills);
+    console.log(`[ohmu] [${mission.label}] phase: verify — done`);
+
+    if (mission.retrospect) {
+      const prompt = mission.retrospect(verifyOutput);
+      if (prompt) await spawnPhase("retrospect", prompt, cwd, mission.skills);
+    }
+
+    const result = parseVerifyResult(verifyOutput);
+
+    if (result.passed) {
+      console.log(`[ohmu] [${mission.label}] verify: PASS`);
+      break;
+    }
+
+    console.log(`[ohmu] [${mission.label}] verify: FAIL — ${result.feedback ?? "no details provided"}`);
+
+    if (attempt >= MAX_EXECUTE_RETRIES) {
+      console.error(`[ohmu] [${mission.label}] max retries (${MAX_EXECUTE_RETRIES}) reached without a passing verify.`);
+      if (mission.retrospect) {
+        const exhaustedPrompt = `The mission "${mission.label}" failed to pass verification after ${MAX_EXECUTE_RETRIES} attempts.
+
+Final verification transcript:
+
+<transcript>
+${verifyOutput}
+</transcript>
+
+Use the /write-retrospective skill to document:
+1. Why the execute→verify loop stalled.
+2. Concrete improvements to the execute or verify instructions to prevent this in future runs.`;
+        await spawnPhase("retrospect", exhaustedPrompt, cwd, mission.skills);
+      }
+      break;
+    }
+
+    feedback = result.feedback;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Skill resolution (used by spawnPhase)
+// ---------------------------------------------------------------------------
+
+function isSkillPath(s: string): boolean {
+  return s.startsWith("/") || s.startsWith("./") || s.startsWith("../");
+}
+
+async function parseSkillFrontmatter(
+  skillMdPath: string,
+): Promise<{ name: string; description: string } | null> {
+  try {
+    const content = await fs.readFile(skillMdPath, "utf-8");
+    const match = content.match(/^---\s*\n([\s\S]*?)\n---/);
+    if (!match) return null;
+    const fm = match[1];
+    const name = fm.match(/^name:\s*(.+)$/m)?.[1]?.trim();
+    const description = fm.match(/^description:\s*(.+)$/m)?.[1]?.trim();
+    if (!name || !description) return null;
+    return { name, description };
+  } catch {
+    return null;
+  }
+}
+
+async function resolveSkills(skills: string[], discovered: Skill[]): Promise<Skill[]> {
+  const result: Skill[] = [];
+
+  for (const entry of skills) {
+    if (isSkillPath(entry)) {
+      const skillMdPath = nodePath.join(entry, "SKILL.md");
+      const parsed = await parseSkillFrontmatter(skillMdPath);
+      if (parsed) {
+        result.push({
+          name: parsed.name,
+          description: parsed.description,
+          filePath: nodePath.resolve(skillMdPath),
+          baseDir: nodePath.resolve(entry),
+          source: "custom",
+        });
+      } else {
+        console.warn(`[ohmu] could not load skill from path: ${entry}`);
+      }
+    } else {
+      const found = discovered.find((sk) => sk.name === entry);
+      if (found) {
+        result.push(found);
+      } else {
+        console.warn(
+          `[ohmu] skill not found: "${entry}" — available: ${discovered.map((s) => s.name).join(", ") || "(none)"}`,
+        );
+      }
+    }
+  }
+
+  return result;
+}
