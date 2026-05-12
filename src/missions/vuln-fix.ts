@@ -53,12 +53,10 @@ ${description}
    * Review the fix: check commits, perform a code review, and run tests.
    */
   verify(): string {
-    return verify(`Review the work done in this mission:
-      1. Run \`git log --oneline -5\` to see what was changed.
-      2. Run \`git diff main\` and check that no unrelated logic was altered.
-      3. Run \`npm run lint\` and confirm it exits with no errors.
-      4. Run only the server unit tests (\`npm run test:server\` or the relevant spec file directly with mocha) — do not start the full application or run integration/e2e tests.
-      5. Confirm all tests pass.
-    `);
+    return `Review the work done in this mission:
+      1. Look at the git history to see what was changed.
+      2. Run linters and confirm they exit with no errors.
+      3. Confirm all tests pass.
+    `;
   }
 }
