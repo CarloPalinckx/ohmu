@@ -1,5 +1,23 @@
 import { z } from "zod";
 import type { MissionConstructor } from "./mission.js";
+import { baseParameters } from "./mission.js";
+
+// ---------------------------------------------------------------------------
+// YAML helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Wrap a string in double quotes if it contains characters that would break
+ * bare YAML scalars (colons, hashes, brackets, etc.).
+ *
+ * @param s - Raw string value.
+ */
+function yamlQuote(s: string): string {
+  if (/[:#{\[\]},|>&*?!'"@`%]/.test(s) || s.includes("\n")) {
+    return `"${s.replace(/"/g, '\\"')}"`;
+  }
+  return s;
+}
 
 // ---------------------------------------------------------------------------
 // GitHub issue template generator
@@ -32,45 +50,71 @@ function toTitleCase(name: string): string {
 }
 
 /**
- * Generate a GitHub issue template markdown file for a mission.
+ * Generate a GitHub issue form (`.yml`) for a mission.
  *
- * The template pre-populates the issue body with the YAML frontmatter
- * skeleton that `parseIssueFrontmatter` expects. Field placeholder comments
- * are derived from each parameter's `.describe()` annotation in the Zod schema.
+ * Each parameter becomes a labeled form field. When a human submits the form,
+ * GitHub renders the body as `### key\n\nvalue` sections, which
+ * `parseIssueFrontmatter` in the GitHub input reads back as structured vars.
  *
- * Output path convention: `.github/ISSUE_TEMPLATE/<mission-name>.md`
+ * The `mission` field is pre-filled and should not be modified by the user.
+ * Required parameters become single-line `input` fields; optional ones become
+ * multi-line `textarea` fields.
+ *
+ * Output path convention: `.github/ISSUE_TEMPLATE/<mission-name>.yml`
  *
  * @param Cls - The mission constructor whose `static config` is used as the source of truth.
- * @returns The full markdown string to write to the template file.
+ * @returns `{ filename, content }` — filename is relative to the ISSUE_TEMPLATE dir.
  */
-export function generateIssueTemplate(Cls: MissionConstructor): string {
+export function generateIssueTemplate(Cls: MissionConstructor): { filename: string; content: string } {
   const { name, description, parameters } = Cls.config;
 
-  // GitHub template metadata block (not the issue frontmatter — this is GH's own header)
-  const templateHeader = [
-    `---`,
-    `name: ${toTitleCase(name)}`,
-    `about: ${description}`,
-    `title: "[${name}] "`,
-    `labels: ""`,
-    `---`,
-  ].join("\n");
+  const bodyFields: string[] = [];
 
-  // Issue body: YAML frontmatter skeleton that the ohmu parser will read
-  const frontmatterLines: string[] = ["---", `mission: ${name}`];
+  // `mission` field: pre-filled textarea so the agent knows which mission type
+  // to dispatch to. The user should leave this untouched.
+  bodyFields.push([
+    `  - type: textarea`,
+    `    id: mission`,
+    `    attributes:`,
+    `      label: mission`,
+    `      description: "Identifies the mission type for the coding agent. Do not modify."`,
+    `      value: ${name}`,
+    `    validations:`,
+    `      required: true`,
+  ].join("\n"));
 
-  if (parameters) {
-    for (const [key, field] of Object.entries(
-      parameters.shape as Record<string, z.ZodTypeAny>,
-    )) {
-      const { description: fieldDesc, required } = introspectField(field);
-      const suffix = required ? "" : " (optional)";
-      const placeholder = fieldDesc ? `<!-- ${fieldDesc}${suffix} -->` : "";
-      frontmatterLines.push(`${key}: ${placeholder}`);
+  // Base parameters (e.g. repo) followed by mission-specific parameters.
+  const allShapes: Array<[string, z.ZodTypeAny]> = [
+    ...Object.entries(baseParameters.shape as Record<string, z.ZodTypeAny>),
+    ...(parameters ? Object.entries(parameters.shape as Record<string, z.ZodTypeAny>) : []),
+  ];
+
+  for (const [key, field] of allShapes) {
+    const { description: fieldDesc, required } = introspectField(field);
+    // Required → single-line input; optional → textarea for multiline flexibility.
+    const type = required ? "input" : "textarea";
+    const lines = [
+      `  - type: ${type}`,
+      `    id: ${key}`,
+      `    attributes:`,
+      `      label: ${key}`,
+    ];
+    if (fieldDesc) {
+      lines.push(`      description: ${yamlQuote(fieldDesc)}`);
     }
+    lines.push(`    validations:`);
+    lines.push(`      required: ${required}`);
+    bodyFields.push(lines.join("\n"));
   }
 
-  frontmatterLines.push("---");
+  const content = [
+    `name: ${toTitleCase(name)}`,
+    `description: ${yamlQuote(description)}`,
+    `title: "[${name}] "`,
+    `labels: []`,
+    `body:`,
+    bodyFields.join("\n"),
+  ].join("\n") + "\n";
 
-  return `${templateHeader}\n\n${frontmatterLines.join("\n")}\n`;
+  return { filename: `${name}.yml`, content };
 }

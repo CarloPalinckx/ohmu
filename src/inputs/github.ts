@@ -151,30 +151,69 @@ Implement this. When done, open a pull request and move it to "In Review" on pro
 // ---------------------------------------------------------------------------
 
 /**
- * Parse a leading YAML frontmatter block from an issue body.
+ * Parse structured variables from an issue body.
  *
- * Matches:
- *   ---
- *   key: value
- *   ---
- *   (rest of body)
+ * Handles two formats produced by the two template styles:
  *
- * Returns `null` when no frontmatter block is found.
+ * 1. **YAML frontmatter** (legacy markdown template):
+ *    ```
+ *    ---
+ *    key: value
+ *    ---
+ *    ```
+ *
+ * 2. **GitHub issue form output** (current `.yml` form template):
+ *    ```
+ *    ### key
+ *
+ *    value
+ *
+ *    ### next-key
+ *
+ *    value
+ *    ```
+ *    Field IDs in the form equal the label text, so the key is recovered by
+ *    lowercasing the section heading. The sentinel value `_No response_`
+ *    (GitHub's placeholder for empty optional fields) is treated as absent.
+ *
+ * Returns `null` when neither format is detected.
  * Values are returned as raw trimmed strings — no type coercion.
+ *
+ * @param rawBody - Raw issue body string as returned by the GitHub API.
  */
 function parseIssueFrontmatter(
   rawBody: string,
 ): { vars: Record<string, string>; body: string } | null {
-  const match = rawBody.match(/^---[\t ]*\n([\s\S]*?)\n---[\t ]*\n?([\s\S]*)/);
-  if (!match) return null;
-
-  const vars: Record<string, string> = {};
-  for (const line of match[1].split("\n")) {
-    const m = line.match(/^([\w-]+):[\t ]*(.*)$/);
-    if (m) vars[m[1].trim()] = m[2].trim();
+  // Format 1: YAML frontmatter at the top of the body.
+  const fmMatch = rawBody.match(/^---[\t ]*\n([\s\S]*?)\n---[\t ]*\n?([\s\S]*)/);
+  if (fmMatch) {
+    const vars: Record<string, string> = {};
+    for (const line of fmMatch[1].split("\n")) {
+      const m = line.match(/^([\w-]+):[\t ]*(.*)$/);
+      if (m) vars[m[1].trim()] = m[2].trim();
+    }
+    return { vars, body: fmMatch[2].trim() };
   }
 
-  return { vars, body: match[2].trim() };
+  // Format 2: GitHub issue form output ("### key\n\nvalue" sections).
+  if (rawBody.includes("### ")) {
+    const vars: Record<string, string> = {};
+    // Split before each section heading so every chunk owns one field.
+    const parts = rawBody.split(/\n(?=### )/);
+    for (const part of parts) {
+      const m = part.match(/^### ([\w-]+)\s*\n\n([\s\S]*)/);
+      if (!m) continue;
+      const value = m[2].trim();
+      if (value && value !== "_No response_") {
+        vars[m[1].toLowerCase()] = value;
+      }
+    }
+    if (Object.keys(vars).length > 0) {
+      return { vars, body: rawBody };
+    }
+  }
+
+  return null;
 }
 
 async function findPrFeedbackMission(

@@ -1,5 +1,7 @@
 import fs from "node:fs/promises";
 import nodePath from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
 import { z } from "zod";
 
@@ -12,6 +14,21 @@ import {
   SessionManager,
   type Skill,
 } from "@earendil-works/pi-coding-agent";
+
+const execAsync = promisify(execFile);
+
+// ---------------------------------------------------------------------------
+// Base parameters — required by every mission
+// ---------------------------------------------------------------------------
+
+/**
+ * Zod schema for the parameters that every mission must supply,
+ * regardless of mission type. Merged with mission-specific parameters
+ * in `assembleMission`.
+ */
+export const baseParameters = z.object({
+  repo: z.string().describe("GitHub repository to work in (owner/name, e.g. acme/my-app)"),
+});
 
 // ---------------------------------------------------------------------------
 // VerificationResponse + helper
@@ -60,6 +77,9 @@ export interface MissionConfig {
 export interface MissionRun {
   /** Short label for logging. */
   label: string;
+
+  /** GitHub repository this mission operates on (owner/name). */
+  repo: string;
 
   /**
    * Lifecycle phase run before the main instructions.
@@ -197,16 +217,18 @@ Identify where the step took more effort than needed and use the /write-retrospe
  * fields and strips unknown keys, throwing a `ZodError` on failure.
  */
 export function assembleMission(Cls: MissionConstructor, params: Record<string, string>): MissionRun {
+  const { repo } = baseParameters.parse(params);
   const schema = Cls.config?.parameters;
   const validated = schema ? schema.parse(params) : params;
   const mission = new Cls(validated);
   return {
-    label:       mission.label(),
-    prepare:     mission.prepare(),
+    repo,
+    label:        mission.label(),
+    prepare:      mission.prepare(),
     instructions: mission.execute(),
-    verify:      mission.verify(),
-    retrospect:  (transcript) => mission.retrospect(transcript),
-    skills:      Cls.config?.skills,
+    verify:       mission.verify(),
+    retrospect:   (transcript) => mission.retrospect(transcript),
+    skills:       Cls.config?.skills,
   };
 }
 
@@ -363,7 +385,50 @@ async function spawnPhase(
 /** Maximum number of execute→verify cycles before giving up. */
 const MAX_EXECUTE_RETRIES = 3;
 
-export async function runMission(mission: MissionRun, cwd: string): Promise<void> {
+/**
+ * Clone `repo` into `workspacesDir/<repo-slug>` if the directory is absent,
+ * then add a new git worktree at `workspacesDir/<repo-slug>-<branch-slug>`
+ * on a fresh branch named `ohmu/<branch-slug>`.
+ *
+ * The branch slug is derived from the mission label and a millisecond
+ * timestamp to guarantee uniqueness across repeated runs.
+ *
+ * @param ohmCwd  - The ohmu project root (must contain a `workspaces/` dir).
+ * @param repo    - GitHub repo in `owner/name` format.
+ * @param label   - Human-readable mission label used to name the branch.
+ * @returns         Absolute path to the newly created worktree checkout.
+ */
+async function setupWorktree(ohmCwd: string, repo: string, label: string): Promise<string> {
+  const workspacesDir = nodePath.join(ohmCwd, "workspaces");
+  const repoSlug = repo.split("/").at(-1) ?? repo.replace(/\//g, "-");
+  const repoDir = nodePath.join(workspacesDir, repoSlug);
+
+  // Clone if the directory is absent.
+  try {
+    await fs.access(repoDir);
+  } catch {
+    console.log(`[ohmu] cloning ${repo} → ${repoDir}`);
+    await execAsync("gh", ["repo", "clone", repo, repoDir]);
+  }
+
+  // Derive a URL-safe slug from the mission label + timestamp for uniqueness.
+  const labelSlug = label
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 60);
+  const branchSlug = `${labelSlug}-${Date.now()}`;
+  const branch = `ohmu/${branchSlug}`;
+  const worktreeDir = nodePath.join(workspacesDir, `${repoSlug}-${branchSlug}`);
+
+  console.log(`[ohmu] creating worktree on branch '${branch}' → ${worktreeDir}`);
+  await execAsync("git", ["-C", repoDir, "worktree", "add", worktreeDir, "-b", branch]);
+
+  return worktreeDir;
+}
+
+export async function runMission(mission: MissionRun, ohmCwd: string): Promise<void> {
+  const cwd = await setupWorktree(ohmCwd, mission.repo, mission.label);
   console.log(`[ohmu] mission: ${mission.label}`);
 
   if (mission.skills !== undefined) {

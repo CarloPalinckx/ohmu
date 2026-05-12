@@ -25,9 +25,20 @@ if (missions.length === 0) {
   process.exit(0);
 }
 
+const generated = new Set<string>();
+
 for (const Cls of missions) {
-  const content = generateIssueTemplate(Cls);
-  const outPath = path.join(outDir, `${Cls.config.name}.md`);
+  const { filename, content } = generateIssueTemplate(Cls);
+  const outPath = path.join(outDir, filename);
   await fs.writeFile(outPath, content, "utf-8");
+  generated.add(filename);
   console.log(`[ohmu] wrote ${path.relative(cwd, outPath)}`);
+}
+
+// Remove stale templates (.md or .yml) that no longer correspond to a mission.
+for (const existing of await fs.readdir(outDir)) {
+  if (!generated.has(existing)) {
+    await fs.rm(path.join(outDir, existing));
+    console.log(`[ohmu] removed stale template: ${existing}`);
+  }
 }
