@@ -339,12 +339,20 @@ async function spawnPhase(
   const authStorage = AuthStorage.create();
   const agentDir = getAgentDir();
 
+  // `skillsOverride` must be synchronous per the SDK contract, so we
+  // pre-resolve any path-based skills (which require async file reads)
+  // before constructing the loader. Named skills are resolved synchronously
+  // inside the override from the loader's own discovered set.
+  const preResolvedPathSkills = skills !== undefined
+    ? await resolvePathSkills(skills)
+    : undefined;
+
   const loader = new DefaultResourceLoader({
     cwd,
     agentDir,
     ...(skills !== undefined && {
-      skillsOverride: async (current) => ({
-        skills: await resolveSkills(skills, current.skills),
+      skillsOverride: (current) => ({
+        skills: resolveNamedSkills(skills, current.skills, preResolvedPathSkills!),
         diagnostics: current.diagnostics,
       }),
     }),
@@ -533,35 +541,61 @@ async function parseSkillFrontmatter(
   }
 }
 
-async function resolveSkills(skills: string[], discovered: Skill[]): Promise<Skill[]> {
+/**
+ * Async step: load Skill metadata for every path-based entry in `skills`.
+ * Named entries (no path prefix) are skipped — they are resolved later in
+ * `resolveNamedSkills` where the loader's discovered set is available.
+ *
+ * @param skills - Mixed list of skill names and/or filesystem paths.
+ * @returns       Fully hydrated `Skill` objects for path-based entries only.
+ */
+async function resolvePathSkills(skills: string[]): Promise<Skill[]> {
   const result: Skill[] = [];
-
   for (const entry of skills) {
-    if (isSkillPath(entry)) {
-      const skillMdPath = nodePath.join(entry, "SKILL.md");
-      const parsed = await parseSkillFrontmatter(skillMdPath);
-      if (parsed) {
-        result.push({
-          name: parsed.name,
-          description: parsed.description,
-          filePath: nodePath.resolve(skillMdPath),
-          baseDir: nodePath.resolve(entry),
-          source: "custom",
-        });
-      } else {
-        console.warn(`[ohmu] could not load skill from path: ${entry}`);
-      }
+    if (!isSkillPath(entry)) continue;
+    const skillMdPath = nodePath.join(entry, "SKILL.md");
+    const parsed = await parseSkillFrontmatter(skillMdPath);
+    if (parsed) {
+      result.push({
+        name: parsed.name,
+        description: parsed.description,
+        filePath: nodePath.resolve(skillMdPath),
+        baseDir: nodePath.resolve(entry),
+        source: "custom",
+      });
     } else {
-      const found = discovered.find((sk) => sk.name === entry);
-      if (found) {
-        result.push(found);
-      } else {
-        console.warn(
-          `[ohmu] skill not found: "${entry}" — available: ${discovered.map((s) => s.name).join(", ") || "(none)"}`,
-        );
-      }
+      console.warn(`[ohmu] could not load skill from path: ${entry}`);
     }
   }
+  return result;
+}
 
+/**
+ * Sync step: resolve named entries against the loader's discovered skills and
+ * merge with the already-resolved path-based skills.
+ * Called inside `skillsOverride`, which must be synchronous per the SDK contract.
+ *
+ * @param skills              - Original mixed list of skill names / paths.
+ * @param discovered          - Skills discovered by the loader from the cwd.
+ * @param preResolvedPathSkills - Skills already loaded by `resolvePathSkills`.
+ * @returns                     Final merged skill list for this session.
+ */
+function resolveNamedSkills(
+  skills: string[],
+  discovered: Skill[],
+  preResolvedPathSkills: Skill[],
+): Skill[] {
+  const result: Skill[] = [...preResolvedPathSkills];
+  for (const entry of skills) {
+    if (isSkillPath(entry)) continue; // already handled
+    const found = discovered.find((sk) => sk.name === entry);
+    if (found) {
+      result.push(found);
+    } else {
+      console.warn(
+        `[ohmu] skill not found: "${entry}" — available: ${discovered.map((s) => s.name).join(", ") || "(none)"}`,
+      );
+    }
+  }
   return result;
 }
