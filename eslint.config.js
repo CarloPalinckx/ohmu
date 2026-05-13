@@ -16,6 +16,7 @@ export default [
     },
     rules: {
       ...tseslint.configs.recommended.rules,
+      'arrow-body-style': ['error', 'always'],
       '@typescript-eslint/no-explicit-any': 'warn',
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
     },
