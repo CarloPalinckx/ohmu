@@ -54,4 +54,4 @@ RUN mkdir -p /home/ohmu/.ssh && chmod 700 /home/ohmu/.ssh \
 USER ohmu
 WORKDIR /home/ohmu
 
-CMD ["/opt/agent/node_modules/.bin/tsx", "/home/ohmu/src/index.ts"]
+CMD ["/bin/bash"]
