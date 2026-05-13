@@ -94,16 +94,29 @@ export interface PhaseDefinition {
  *   prompt(`Implement the fix.`);
  *   return promptWithVerdict(`Verify linters and tests pass.`);
  * });
+ *
+ * @example
+ * // Name as a plain string shorthand
+ * phase('execute', ({ prompt }) => {
+ *   prompt(`Implement the fix.`);
+ * });
  */
 export function phase(callback: PhaseCallback): PhaseDefinition;
 export function phase(callback: VerifiedPhaseCallback): PhaseDefinition;
+export function phase(name: string, callback: PhaseCallback): PhaseDefinition;
+export function phase(name: string, callback: VerifiedPhaseCallback): PhaseDefinition;
 export function phase(config: PhaseConfig, callback: PhaseCallback): PhaseDefinition;
 export function phase(config: PhaseConfig, callback: VerifiedPhaseCallback): PhaseDefinition;
 export function phase(
-  configOrCallback: PhaseConfig | PhaseCallback | VerifiedPhaseCallback,
+  configOrCallback: PhaseConfig | PhaseCallback | VerifiedPhaseCallback | string,
   callback?: PhaseCallback | VerifiedPhaseCallback,
 ): PhaseDefinition {
-  const config: PhaseConfig = typeof configOrCallback === 'function' ? {} : configOrCallback;
+  const config: PhaseConfig =
+    typeof configOrCallback === 'function'
+      ? {}
+      : typeof configOrCallback === 'string'
+        ? { name: configOrCallback }
+        : configOrCallback;
   const cb = (typeof configOrCallback === 'function' ? configOrCallback : callback) as
     | PhaseCallback
     | VerifiedPhaseCallback;
