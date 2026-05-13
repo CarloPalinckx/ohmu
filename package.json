@@ -4,12 +4,36 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "tsx src/index.ts",
-    "generate-templates": "tsx src/scripts/generate-templates.ts"
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -p tsconfig.framework.json --noEmit",
+    "lint": "eslint src/",
+    "format": "prettier --write src/",
+    "start": "tsx src/scripts/run-mission.ts work-on-github-project",
+    "mission": "tsx src/scripts/run-mission.ts",
+    "generate-templates": "tsx src/scripts/generate-templates.ts",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "src/**/*.ts": [
+      "prettier --write",
+      "eslint --fix",
+      "bash -c 'tsc -p tsconfig.framework.json --noEmit'",
+      "bash -c 'vitest run'"
+    ]
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "*",
     "tsx": "^4",
     "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@typescript-eslint/eslint-plugin": "^8.59.3",
+    "@typescript-eslint/parser": "^8.59.3",
+    "eslint": "^10.3.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.0.4",
+    "prettier": "^3.8.3",
+    "vitest": "^4.1.6"
   }
 }
