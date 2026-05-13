@@ -9,7 +9,7 @@ export default mission(
       about: z
         .string()
         .describe(
-          'Body of text to transform into a wiki article. Could be a session log, a small learning, or a concept explanation.',
+          'Raw text from a session log, terminal output, or notes. The agent will mine this for reusable knowledge about the codebase/repo and write wiki articles documenting what was discovered — not the task itself.',
         ),
     }),
     tools: ['read', 'bash', 'write'],
@@ -18,21 +18,44 @@ export default mission(
     const { about } = parameters;
 
     /**
-     * Survey the existing vault so the write phase can place the new note in context:
-     * - understand the folder structure
-     * - collect existing note titles for wikilinks
-     * - discover tags already in use
+     * Survey the existing vault and identify what codebase knowledge to extract
+     * from the session content — before writing anything.
      */
     phase('research', async ({ prompt }) => {
       await prompt(`\
-You are preparing to write a new Obsidian wiki note. Before writing anything, survey the existing vault at \`./wiki/\`.
+You are preparing to write wiki articles that document a codebase. Before writing anything, do two things.
 
-1. List the directory tree of \`./wiki/\` (use \`bash\` with \`find ./wiki -type f -name "*.md"\`). If the directory does not exist yet, note that the vault is empty.
-2. Skim the frontmatter of existing notes (the YAML block between \`---\` delimiters) to collect:
-   - all tags currently in use
-   - all note titles / filenames that exist
-3. Read a few notes that seem most related to the content below, so you understand the tone, depth, and linking style used in this vault.
-4. Summarise what you found: folder structure, relevant existing notes, and tags. Do not write any files yet.
+## 1. Survey the existing vault at \`./wiki/\`
+
+Run \`find ./wiki -type f -name "*.md"\`. If the directory does not exist, note the vault is empty.
+Skim the frontmatter of existing notes to collect:
+- all tags currently in use
+- all note titles and filenames
+
+Read any notes that seem related to the content below, to understand the tone and linking style.
+Summarise what you found.
+
+## 2. Mine the content for codebase knowledge
+
+The content below comes from a session log or notes produced while working on a codebase.
+Your job is to extract **reusable knowledge about the repository itself** — not to document the task or what the agent did.
+
+For each piece of information in the content, ask:
+- "Would a new developer working on this repo want to know this?"
+- "Does this describe how the repo works, how to run it, its structure, its APIs, its gotchas?"
+
+If yes → it belongs in the wiki.
+If it only describes what happened during this specific task (what was fixed, what the agent tried, what failed) → skip it.
+
+Good candidates from a session log:
+- Test infrastructure: what framework is used, how to run tests, caveats (e.g. "integration tests require a live server")
+- API endpoints: routes discovered, their purpose, auth requirements
+- Data models: entity relationships, key fields
+- Architecture: how the app is structured, key files and their roles
+- Configuration: environment variables, ports, build steps
+- Known quirks or gotchas specific to this codebase
+
+List the wiki articles you plan to write, with a one-line description of each. Do not write any files yet.
 
 Content to analyse:
 ${about}`);
@@ -44,25 +67,34 @@ ${about}`);
      */
     phase('write', async ({ prompt }) => {
       await prompt(`\
-You are writing a new Obsidian wiki note into the vault at \`./wiki/\`.
+You are writing wiki articles into the vault at \`./wiki/\`. These articles document the **codebase**, not the task that was performed.
 
-Use the research you did in the previous phase to inform placement and linking.
+Use the research from the previous phase — the planned article list and the vault survey — to write the notes now.
+
+## What to write about
+
+Document what you learned **about the repository**: how it works, how to run things, its structure, its APIs, its quirks.
+
+Do NOT write about:
+- What the agent did during the session
+- What was fixed or attempted
+- The vulnerability or bug that was being worked on (that belongs in a separate task-tracking memory)
 
 ## Writing style
 
-Write every article as a **mini guide** — something a teammate could read and immediately act on or learn from. It should be helpful first, not just a record of what happened.
+Write every article as a **reference doc or mini guide** — something a developer new to this repo could read and immediately use.
 
-- Open with one or two sentences that explain **what this is and why it matters**.
-- Use clear headings to break the content into scannable sections.
-- Prefer concrete examples, steps, or rules of thumb over vague descriptions.
-- End with a short **"When to use this" or "Watch out for"** section where relevant.
-- Do not write in a journalistic or note-dump style. Write as if explaining to a capable colleague who has never seen this before.
+- Open with one or two sentences explaining what this is and why it matters in this codebase.
+- Use clear headings to break content into scannable sections.
+- Prefer concrete commands, examples, and specifics over vague descriptions.
+- Include warnings or gotchas where relevant (a "Watch out for" section).
+- Do not pad. Aim for useful and dense, not long.
 
-## Obsidian conventions to follow
+## Obsidian conventions
 
-- **File location**: Place the note under a sensible subfolder of \`./wiki/\` that matches the content type (e.g. \`concepts/\`, \`guides/\`, \`learnings/\`, \`people/\`). Create the folder if it does not exist.
-- **Filename**: Use lowercase kebab-case (e.g. \`sql-injection-basics.md\`).
-- **Frontmatter**: Every note must open with a YAML block:
+- **File location**: Organise by project/repo under \`./wiki/\`. Use \`./wiki/<project-name>/<topic>.md\` (e.g. \`./wiki/juice-shop/running-tests.md\`, \`./wiki/juice-shop/api-endpoints.md\`). Create folders as needed.
+- **Filename**: lowercase kebab-case.
+- **Frontmatter**: every note must open with:
   \`\`\`yaml
   ---
   title: Human Readable Title
@@ -70,13 +102,8 @@ Write every article as a **mini guide** — something a teammate could read and 
   created: YYYY-MM-DD
   ---
   \`\`\`
-- **Wikilinks**: Link to any existing notes that are relevant using \`[[Note Title]]\` syntax. Do not invent links to notes that do not exist.
-- **Structure**: Use Markdown headings (\`##\`, \`###\`), bullet lists, and code blocks as appropriate. Aim for clarity over length.
-- **Atomic notes**: If the content naturally spans multiple distinct topics, split it into multiple notes and link them together.
-
-## Content to transform
-
-${about}
+- **Wikilinks**: use \`[[Note Title]]\` to link to existing notes. Do not invent links to notes that do not exist.
+- **Atomic notes**: if the content naturally spans multiple topics, split into multiple files and cross-link.
 
 Write the file(s) now using the \`write\` tool.`);
 
@@ -86,11 +113,11 @@ Review the wiki note(s) you just wrote.
 
 1. Read each file you created with the \`read\` tool.
 2. Confirm every file has valid YAML frontmatter (title, tags, created).
-3. Confirm all \`[[wikilinks]]\` point to files that actually exist in \`./wiki/\`.
-4. Confirm no new tags were introduced when a sufficiently similar tag already exists in the vault — if a new tag is too close in meaning to an existing one (e.g. \`auth\` vs \`authentication\`, \`bug-fix\` vs \`bugfix\`), the existing tag should have been reused instead.
-5. Confirm the filename is lowercase kebab-case and the file is under \`./wiki/\`.
-6. Confirm the article reads as a helpful mini guide — not a raw note dump. It should open with context, be structured with headings, and give a reader something actionable or learnable.
-7. Confirm the content faithfully represents the source material without hallucinating details.
+3. Confirm all \`[[wikilinks]]\` point to files that actually exist in \`./wiki/\`. No invented links.
+4. Confirm no new tags were introduced when a sufficiently similar tag already exists in the vault.
+5. Confirm the filename is lowercase kebab-case and lives under \`./wiki/<project>/\`.
+6. Confirm the article documents the **repository** (how it works, how to use it) — not the task or what the agent did.
+7. Confirm there is no mention of the specific bug, fix, or mission that produced this session log.
 `)};
     });
   },

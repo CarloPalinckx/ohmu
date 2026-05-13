@@ -160,7 +160,8 @@ function buildCachePrefix(priorOutputs: Array<{ name: string; output: string }>)
  * @param cachePrefix     - Prior phase output injected into the first prompt.
  * @param sessionFilePath - Path where Pi writes the session .jsonl file.
  * @param cwd             - Working directory for the Pi session.
- * @returns                 Total assistant output and optional verifier function.
+ * @returns                 Total assistant output, optional verifier function, and the live session
+ *                          (caller must dispose it after the verifier has run).
  */
 async function runPhaseAttempt(
   phase: PhaseDefinition,
@@ -171,6 +172,7 @@ async function runPhaseAttempt(
   output: string;
   verifier: VerificationFn | null;
   promptWithVerdict: PromptWithVerdictFn;
+  session: AgentSession;
 }> {
   await mkdir(path.dirname(sessionFilePath), { recursive: true });
 
@@ -185,13 +187,9 @@ async function runPhaseAttempt(
 
   const { context, promptWithVerdict, getTotal } = createPhaseContext(session, cachePrefix);
 
-  try {
-    const result = await phase.callback(context);
-    const verifier = typeof result === 'function' ? (result as VerificationFn) : null;
-    return { output: getTotal(), verifier, promptWithVerdict };
-  } finally {
-    session.dispose();
-  }
+  const result = await phase.callback(context);
+  const verifier = typeof result === 'function' ? (result as VerificationFn) : null;
+  return { output: getTotal(), verifier, promptWithVerdict, session };
 }
 
 // ---------------------------------------------------------------------------
@@ -227,7 +225,7 @@ async function runPhase(
     console.log(`[mission] phase: ${name} — attempt ${attempt}/${phase.maxAttempts}`);
 
     const attemptStart = Date.now();
-    const { output, verifier, promptWithVerdict } = await runPhaseAttempt(
+    const { output, verifier, promptWithVerdict, session } = await runPhaseAttempt(
       phase,
       cachePrefix,
       sessionFile,
@@ -237,6 +235,7 @@ async function runPhase(
 
     const verdict =
       verifier === null ? 'pass' : (await verifier(promptWithVerdict)) ? 'pass' : 'fail';
+    session.dispose();
 
     attempts.push({
       sessionFile: path.basename(sessionFile),
@@ -284,13 +283,14 @@ async function runPhase(
  * @param parameters - Parsed parameters matching the mission's Zod schema.
  * @param cwd        - Working directory for all Pi sessions.
  * @param logsDir    - Root logs directory (e.g. path.join(repoRoot, '.logs')).
+ * @returns            Absolute path to the directory containing this mission's logs and session files.
  */
 export async function runMission<TParams>(
   definition: MissionDefinition<TParams>,
   parameters: TParams,
   cwd: string,
   logsDir: string,
-): Promise<void> {
+): Promise<string> {
   const missionId = crypto.randomUUID();
   const missionLogDir = path.join(logsDir, 'missions', missionId);
   await mkdir(missionLogDir, { recursive: true });
@@ -333,4 +333,5 @@ export async function runMission<TParams>(
   await writeFile(path.join(missionLogDir, 'meta.json'), JSON.stringify(metaLog, null, 2));
 
   console.log(`[mission] ${definition.config.name} — outcome: ${outcome}`);
+  return missionLogDir;
 }

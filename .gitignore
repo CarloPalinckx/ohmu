@@ -6,3 +6,9 @@
 node_modules/
 workspaces
 .env
+.bash_history
+.logs/
+coverage/
+.gitconfig
+.ssh/
+wiki/.obsidian/
