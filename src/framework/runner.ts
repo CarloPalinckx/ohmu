@@ -132,8 +132,11 @@ function createPhaseContext(
 function buildCachePrefix(priorOutputs: Array<{ name: string; output: string }>): string {
   if (priorOutputs.length === 0) return '';
   return (
-    priorOutputs.map(({ name, output }) => `--- Phase: ${name} ---\n${output}\n---`).join('\n\n') +
-    '\n\n'
+    priorOutputs
+      .map(({ name, output }) => {
+        return `--- Phase: ${name} ---\n${output}\n---`;
+      })
+      .join('\n\n') + '\n\n'
   );
 }
 
