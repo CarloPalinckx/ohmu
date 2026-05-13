@@ -100,12 +100,12 @@ export interface PhaseDefinition {
  *   prompt(`Implement the fix.`);
  * });
  */
-export function phase(callback: PhaseCallback): PhaseDefinition;
 export function phase(callback: VerifiedPhaseCallback): PhaseDefinition;
-export function phase(name: string, callback: PhaseCallback): PhaseDefinition;
+export function phase(callback: PhaseCallback): PhaseDefinition;
 export function phase(name: string, callback: VerifiedPhaseCallback): PhaseDefinition;
-export function phase(config: PhaseConfig, callback: PhaseCallback): PhaseDefinition;
+export function phase(name: string, callback: PhaseCallback): PhaseDefinition;
 export function phase(config: PhaseConfig, callback: VerifiedPhaseCallback): PhaseDefinition;
+export function phase(config: PhaseConfig, callback: PhaseCallback): PhaseDefinition;
 export function phase(
   configOrCallback: PhaseConfig | PhaseCallback | VerifiedPhaseCallback | string,
   callback?: PhaseCallback | VerifiedPhaseCallback,

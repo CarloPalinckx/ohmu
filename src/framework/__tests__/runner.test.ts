@@ -23,7 +23,6 @@ import { writeFile } from 'node:fs/promises';
 import { runMission } from '../runner.ts';
 import { mission } from '../mission.ts';
 import { phase } from '../phase.ts';
-import type { PromptWithVerdictFn } from '../phase.ts';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -186,7 +185,7 @@ describe('runMission()', () => {
       const def = mission(BASE_CONFIG, () => {
         phase(async ({ prompt }) => {
           await prompt('Do the work');
-          return (promptWithVerdict: PromptWithVerdictFn) => {
+          return (promptWithVerdict) => {
             return promptWithVerdict('Review the work');
           };
         });
@@ -209,7 +208,7 @@ describe('runMission()', () => {
       const def = mission(BASE_CONFIG, () => {
         phase({ name: 'execute', maxAttempts: 3 }, async ({ prompt }) => {
           await prompt('Do the work');
-          return (promptWithVerdict: PromptWithVerdictFn) => {
+          return (promptWithVerdict) => {
             return promptWithVerdict('Review the work');
           };
         });
@@ -233,7 +232,7 @@ describe('runMission()', () => {
       const def = mission(BASE_CONFIG, () => {
         phase({ name: 'execute', maxAttempts: 2 }, async ({ prompt }) => {
           await prompt('Do the work');
-          return (promptWithVerdict: PromptWithVerdictFn) => {
+          return (promptWithVerdict) => {
             return promptWithVerdict('Review the work');
           };
         });
@@ -254,7 +253,7 @@ describe('runMission()', () => {
       const def = mission(BASE_CONFIG, () => {
         phase({ name: 'execute', maxAttempts: 1 }, async ({ prompt }) => {
           await prompt('Do the work');
-          return (promptWithVerdict: PromptWithVerdictFn) => {
+          return (promptWithVerdict) => {
             return promptWithVerdict('Review the work');
           };
         });
