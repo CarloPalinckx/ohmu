@@ -1,0 +1,11 @@
+services:
+  ohmu:
+    build: .
+    image: ohmu
+    container_name: ohmu
+    environment:
+      COLORTERM: truecolor
+    volumes:
+      - ${HOST_HOME}/dev:/workspaces
+      - ${HOST_HOME}/dev/ohmu:/home/ohmu
+      - ${HOST_HOME}/.ssh:/home/ohmu/.ssh:ro

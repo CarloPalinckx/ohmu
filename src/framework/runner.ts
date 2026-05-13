@@ -7,7 +7,9 @@ import {
   ModelRegistry,
   SessionManager,
   type AgentSession,
+  type ToolDefinition,
 } from '@earendil-works/pi-coding-agent';
+import { createWikiTools, wikiDirExists } from './wiki.ts';
 import type { MissionDefinition } from './mission.ts';
 import type {
   PhaseDefinition,
@@ -168,6 +170,7 @@ async function runPhaseAttempt(
   cachePrefix: string,
   sessionFilePath: string,
   cwd: string,
+  wikiTools: ToolDefinition[],
 ): Promise<{
   output: string;
   verifier: VerificationFn | null;
@@ -183,6 +186,7 @@ async function runPhaseAttempt(
     authStorage,
     modelRegistry: ModelRegistry.create(authStorage),
     sessionManager: SessionManager.open(sessionFilePath),
+    customTools: wikiTools,
   });
 
   const { context, promptWithVerdict, getTotal } = createPhaseContext(session, cachePrefix);
@@ -212,6 +216,7 @@ async function runPhase(
   cachePrefix: string,
   missionLogDir: string,
   cwd: string,
+  wikiTools: ToolDefinition[],
 ): Promise<{ output: string; log: PhaseLog }> {
   const name = phase.name || `phase-${phaseIndex + 1}`;
   const phaseStart = Date.now();
@@ -230,6 +235,7 @@ async function runPhase(
       cachePrefix,
       sessionFile,
       cwd,
+      wikiTools,
     );
     lastOutput = output;
 
@@ -290,12 +296,20 @@ export async function runMission<TParams>(
   parameters: TParams,
   cwd: string,
   logsDir: string,
+  rootDir: string = process.cwd(),
 ): Promise<string> {
   const missionId = crypto.randomUUID();
   const missionLogDir = path.join(logsDir, 'missions', missionId);
   await mkdir(missionLogDir, { recursive: true });
 
   console.log(`[mission] ${definition.config.name} — id: ${missionId}`);
+
+  const wikiDir = path.join(rootDir, 'wiki', path.basename(cwd));
+  const wikiTools = (await wikiDirExists(wikiDir)) ? createWikiTools(rootDir, wikiDir) : [];
+  const wikiNotice =
+    wikiTools.length > 0
+      ? '== Codebase Wiki ==\nUse wiki_list to browse available articles. Use wiki_read to fetch one.\n\n'
+      : '';
 
   const phases = definition.run(parameters);
   const missionStart = Date.now();
@@ -307,7 +321,14 @@ export async function runMission<TParams>(
     const phase = phases[i];
     const cachePrefix = buildCachePrefix(priorOutputs);
 
-    const { output, log } = await runPhase(phase, i, cachePrefix, missionLogDir, cwd);
+    const { output, log } = await runPhase(
+      phase,
+      i,
+      wikiNotice + cachePrefix,
+      missionLogDir,
+      cwd,
+      wikiTools,
+    );
     phaseLogs.push(log);
 
     const phaseName = phase.name || `phase-${i + 1}`;
