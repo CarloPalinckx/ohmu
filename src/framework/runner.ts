@@ -9,7 +9,12 @@ import {
   type AgentSession,
 } from '@earendil-works/pi-coding-agent';
 import type { MissionDefinition } from './mission.ts';
-import type { PhaseDefinition, PhaseCallbackContext, VerificationFn } from './phase.ts';
+import type {
+  PhaseDefinition,
+  PhaseCallbackContext,
+  VerificationFn,
+  PromptWithVerdictFn,
+} from './phase.ts';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -96,7 +101,11 @@ function createOutputCollector(session: AgentSession) {
 function createPhaseContext(
   session: AgentSession,
   cachePrefix: string,
-): { context: PhaseCallbackContext; getTotal: () => string } {
+): {
+  context: PhaseCallbackContext;
+  promptWithVerdict: PromptWithVerdictFn;
+  getTotal: () => string;
+} {
   const collector = createOutputCollector(session);
   let prefixInjected = false;
 
@@ -108,15 +117,15 @@ function createPhaseContext(
       await session.prompt(fullText);
       return collector.getCurrent();
     },
-
-    async promptWithVerdict(text: string): Promise<boolean> {
-      collector.resetCurrent();
-      await session.prompt(text + VERDICT_INSTRUCTION);
-      return collector.getCurrent().includes('VERDICT:PASS');
-    },
   };
 
-  return { context, getTotal: collector.getTotal.bind(collector) };
+  async function promptWithVerdict(text: string): Promise<boolean> {
+    collector.resetCurrent();
+    await session.prompt(text + VERDICT_INSTRUCTION);
+    return collector.getCurrent().includes('VERDICT:PASS');
+  }
+
+  return { context, promptWithVerdict, getTotal: collector.getTotal.bind(collector) };
 }
 
 // ---------------------------------------------------------------------------
@@ -158,7 +167,11 @@ async function runPhaseAttempt(
   cachePrefix: string,
   sessionFilePath: string,
   cwd: string,
-): Promise<{ output: string; verifier: VerificationFn | null }> {
+): Promise<{
+  output: string;
+  verifier: VerificationFn | null;
+  promptWithVerdict: PromptWithVerdictFn;
+}> {
   await mkdir(path.dirname(sessionFilePath), { recursive: true });
 
   const authStorage = AuthStorage.create();
@@ -170,12 +183,12 @@ async function runPhaseAttempt(
     sessionManager: SessionManager.open(sessionFilePath),
   });
 
-  const { context, getTotal } = createPhaseContext(session, cachePrefix);
+  const { context, promptWithVerdict, getTotal } = createPhaseContext(session, cachePrefix);
 
   try {
     const result = await phase.callback(context);
     const verifier = typeof result === 'function' ? (result as VerificationFn) : null;
-    return { output: getTotal(), verifier };
+    return { output: getTotal(), verifier, promptWithVerdict };
   } finally {
     session.dispose();
   }
@@ -214,10 +227,16 @@ async function runPhase(
     console.log(`[mission] phase: ${name} — attempt ${attempt}/${phase.maxAttempts}`);
 
     const attemptStart = Date.now();
-    const { output, verifier } = await runPhaseAttempt(phase, cachePrefix, sessionFile, cwd);
+    const { output, verifier, promptWithVerdict } = await runPhaseAttempt(
+      phase,
+      cachePrefix,
+      sessionFile,
+      cwd,
+    );
     lastOutput = output;
 
-    const verdict = verifier === null ? 'pass' : (await verifier()) ? 'pass' : 'fail';
+    const verdict =
+      verifier === null ? 'pass' : (await verifier(promptWithVerdict)) ? 'pass' : 'fail';
 
     attempts.push({
       sessionFile: path.basename(sessionFile),

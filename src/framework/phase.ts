@@ -21,7 +21,6 @@ export type PromptWithVerdictFn = (text: string) => Promise<boolean>;
  */
 export interface PhaseCallbackContext {
   prompt: PromptFn;
-  promptWithVerdict: PromptWithVerdictFn;
 }
 
 /**
@@ -29,7 +28,7 @@ export interface PhaseCallbackContext {
  * Called by the runner after the main phase work completes.
  * Returning false triggers a retry up to maxAttempts.
  */
-export type VerificationFn = () => Promise<boolean> | boolean;
+export type VerificationFn = (promptWithVerdict: PromptWithVerdictFn) => Promise<boolean> | boolean;
 
 /**
  * Phase callback with no verification — does not return anything.

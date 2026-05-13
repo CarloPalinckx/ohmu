@@ -23,6 +23,7 @@ import { writeFile } from 'node:fs/promises';
 import { runMission } from '../runner.ts';
 import { mission } from '../mission.ts';
 import { phase } from '../phase.ts';
+import type { PromptWithVerdictFn } from '../phase.ts';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -183,9 +184,11 @@ describe('runMission()', () => {
       vi.mocked(createAgentSession).mockResolvedValue({ session } as never);
 
       const def = mission(BASE_CONFIG, () => {
-        phase(async ({ prompt, promptWithVerdict }) => {
+        phase(async ({ prompt }) => {
           await prompt('Do the work');
-          return () => promptWithVerdict('Review the work');
+          return (promptWithVerdict: PromptWithVerdictFn) => {
+            return promptWithVerdict('Review the work');
+          };
         });
       });
 
@@ -204,9 +207,11 @@ describe('runMission()', () => {
         .mockResolvedValueOnce({ session: session2 } as never);
 
       const def = mission(BASE_CONFIG, () => {
-        phase({ name: 'execute', maxAttempts: 3 }, async ({ prompt, promptWithVerdict }) => {
+        phase({ name: 'execute', maxAttempts: 3 }, async ({ prompt }) => {
           await prompt('Do the work');
-          return () => promptWithVerdict('Review the work');
+          return (promptWithVerdict: PromptWithVerdictFn) => {
+            return promptWithVerdict('Review the work');
+          };
         });
       });
 
@@ -226,9 +231,11 @@ describe('runMission()', () => {
       vi.mocked(createAgentSession).mockResolvedValue({ session } as never);
 
       const def = mission(BASE_CONFIG, () => {
-        phase({ name: 'execute', maxAttempts: 2 }, async ({ prompt, promptWithVerdict }) => {
+        phase({ name: 'execute', maxAttempts: 2 }, async ({ prompt }) => {
           await prompt('Do the work');
-          return () => promptWithVerdict('Review the work');
+          return (promptWithVerdict: PromptWithVerdictFn) => {
+            return promptWithVerdict('Review the work');
+          };
         });
       });
 
@@ -245,9 +252,11 @@ describe('runMission()', () => {
       vi.mocked(createAgentSession).mockResolvedValue({ session } as never);
 
       const def = mission(BASE_CONFIG, () => {
-        phase({ name: 'execute', maxAttempts: 1 }, async ({ prompt, promptWithVerdict }) => {
+        phase({ name: 'execute', maxAttempts: 1 }, async ({ prompt }) => {
           await prompt('Do the work');
-          return () => promptWithVerdict('Review the work');
+          return (promptWithVerdict: PromptWithVerdictFn) => {
+            return promptWithVerdict('Review the work');
+          };
         });
         phase({ name: 'cleanup' }, async ({ prompt }) => {
           await prompt('Clean up');
