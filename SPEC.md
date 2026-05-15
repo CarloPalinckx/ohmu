@@ -43,65 +43,88 @@ mission(config, ({ parameters }) => {
       ${parameters.report}
     `);
 
-    return withVerdict(prompt(`
+    return withVerdict(`
       Review the work done in this phase:
       1. Look at the git history to see what was changed.
       2. Run linters and confirm they exit with no errors.
       3. Confirm all tests pass.
-    `)); // reruns phase if verdict is fail, max 3 attempts
+    `); // reruns phase if verdict is fail, max 3 attempts
   });
 });
 ```
 
-## Phase caching
+## Phase context
 
-Each phase runs in its own Pi session. Before a phase starts, the framework reads the
-previous phase's `.jsonl` session file and extracts all assistant message text. This text
-is prepended to the current phase's prompt, giving the agent full context of what was
-done before without sharing a live session.
+Each phase runs in its own Pi session. Before a phase starts, the framework calls
+`sm.buildSessionContext()` on the previous phase's session and injects the resulting
+message list into the new session via `session.agent.state.messages`. This gives the
+next phase full structured context — tool calls, file reads, assistant reasoning — without
+any manual text extraction or string building.
 
-Example of what gets prepended to the `execute` phase:
+Example of what the `execute` phase agent sees as prior context:
 
 ```
---- Phase: prepare ---
-I reviewed the vulnerability report and explored the codebase. Here's what I found:
+[user]: Explore the codebase and write missing tests for the auth module.
 
-The vulnerability is a SQL injection in `src/auth/login.ts` at line 84. The `getUserByEmail`
-function builds a raw query using string interpolation:
+[assistant]: I reviewed the vulnerability report and explored the codebase. Here's what I found:
 
-  const query = `SELECT * FROM users WHERE email = '${email}'`;
+The vulnerability is a SQL injection in `src/auth/login.ts` at line 84...
 
-The `email` parameter comes directly from the request body with no sanitization.
+[toolCall: read] src/auth/login.ts → <file contents>
+[toolCall: bash] npx jest src/auth → 3 tests passed
 
-I checked test coverage for the auth module. `src/auth/login.test.ts` exists but only covers
-happy-path login. There are no tests for malformed or malicious inputs. I've written three
-new tests covering SQL injection patterns — they currently fail, as expected.
----
+I've written three new tests covering SQL injection patterns — they currently fail, as expected.
 ```
+
+The first prompt of each phase is sent on top of this context. No prefix string is
+prepended; the messages are part of the session's conversation history.
 
 ## Verification as a primitive
 
-`withVerdict` takes a lazy `prompt()` call, appends an instruction to output `VERDICT:PASS`
-or `VERDICT:FAIL`, executes the prompt against a Pi session, and parses the result into a
-boolean.
+`withVerdict` takes a prompt string, appends an instruction to output `VERDICT:PASS`
+or `VERDICT:FAIL`, executes it against the phase's Pi session, and parses the result
+into a boolean.
 
 ```ts
-// prompt() returns a LazyPrompt — not dispatched until withVerdict executes it
-return withVerdict(prompt(`Review the work...`));
+// Returns true for VERDICT:PASS, false for VERDICT:FAIL
+return withVerdict(`Review the work...`);
 ```
 
 Internally:
 
 ```ts
-async function withVerdict(lazy: LazyPrompt): Promise<boolean> {
-  lazy.append('\nOutput your verdict as VERDICT:PASS or VERDICT:FAIL.');
-  const result = await lazy.execute(session);
-  return result.includes('VERDICT:PASS');
+async function withVerdict(text: string, session: AgentSession): Promise<boolean> {
+  let output = '';
+  const unsub = session.subscribe((event) => {
+    if (event.type === 'message_update' && event.assistantMessageEvent.type === 'text_delta') {
+      output += event.assistantMessageEvent.delta;
+    }
+  });
+  await session.prompt(text + '\nOutput your verdict as VERDICT:PASS or VERDICT:FAIL.');
+  unsub();
+  return output.includes('VERDICT:PASS');
 }
 ```
 
-If the verdict is `fail`, the framework reruns the phase (new Pi session, new attempt).
+If the verdict is `fail`, the framework retries the phase (see below).
 Maximum attempts defaults to 3 and is configurable per phase.
+
+## Phase retries via session branching
+
+When a phase fails its verdict the framework uses the SDK's session tree to rewind and
+retry — no new session file is created per attempt.
+
+Retry flow:
+1. Before calling the phase callback, record `startEntryId = sm.getLeafId()`.
+2. The phase callback runs (tool calls, edits, etc.) in the session.
+3. The verifier runs and returns `VERDICT:FAIL`.
+4. The framework calls `sm.branchWithSummary(startEntryId, verifierOutput)`, rewinding
+   the session tree to the phase start and storing the verifier's analysis as a
+   `BranchSummaryMessage`.
+5. The next attempt begins from `startEntryId` with the verifier's feedback as context.
+
+All attempts for a phase live in **one session file** as tree branches. The `meta.json`
+records the branch entry IDs so the log viewer can navigate attempts.
 
 ## Mission log
 
@@ -113,17 +136,13 @@ Every mission run is logged to `.logs/missions/{mission-id}/`.
     a3f9c821-4d12-4e77-b9c0-d1e7a02b5f33/
       meta.json
       phase-prepare.jsonl
-      phase-execute-attempt-1.jsonl
-      phase-execute-attempt-2.jsonl
+      phase-execute.jsonl
 ```
 
 - **`meta.json`** — mission metadata, phase references, durations, verdicts. No output text.
-- **`phase-{name}.jsonl`** / **`phase-{name}-attempt-{n}.jsonl`** — raw Pi session files
-  written by Pi's `SessionManager`. Contains full tool call history, tool results, and
-  all assistant messages.
-
-The phase cache text is derived at runtime by reading the previous phase's `.jsonl` and
-extracting assistant message text. It is not stored separately in `meta.json`.
+- **`phase-{name}.jsonl`** — raw Pi session file written by Pi's `SessionManager`.
+  Contains full tool call history, tool results, and all assistant messages.
+  When retries occur, branch points in the tree record each attempt — no separate attempt files.
 
 ### meta.json example
 
@@ -149,17 +168,20 @@ extracting assistant message text. It is not stored separately in `meta.json`.
     {
       "name": "execute",
       "verdict": "pass",
+      "sessionFile": "phase-execute.jsonl",
       "startedAt": "2026-05-13T09:14:22Z",
       "completedAt": "2026-05-13T09:18:45Z",
       "durationMs": 263000,
       "attempts": [
         {
-          "sessionFile": "phase-execute-attempt-1.jsonl",
+          "startEntryId": "a1b2c3d4",
+          "branchEntryId": "e5f6g7h8",
           "durationMs": 180000,
           "verdict": "fail"
         },
         {
-          "sessionFile": "phase-execute-attempt-2.jsonl",
+          "startEntryId": "e5f6g7h8",
+          "branchEntryId": null,
           "durationMs": 83000,
           "verdict": "pass"
         }
