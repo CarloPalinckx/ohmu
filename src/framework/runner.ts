@@ -98,7 +98,7 @@ function createOutputCollector(session: AgentSession) {
  *
  * @param session     - Active Pi session for this phase attempt.
  * @param cachePrefix - Concatenated output from all prior phases.
- * @returns            Phase callback context and a getter for total output.
+ * @returns            Phase callback context and getters for total and last-prompt output.
  */
 function createPhaseContext(
   session: AgentSession,
@@ -107,6 +107,8 @@ function createPhaseContext(
   context: PhaseCallbackContext;
   promptWithVerdict: PromptWithVerdictFn;
   getTotal: () => string;
+  /** Returns the output captured during the most recent promptWithVerdict call. */
+  getLastOutput: () => string;
 } {
   const collector = createOutputCollector(session);
   let prefixInjected = false;
@@ -127,7 +129,13 @@ function createPhaseContext(
     return collector.getCurrent().includes('VERDICT:PASS');
   }
 
-  return { context, promptWithVerdict, getTotal: collector.getTotal.bind(collector) };
+  return {
+    context,
+    promptWithVerdict,
+    getTotal: collector.getTotal.bind(collector),
+    /** Returns the output captured during the most recent promptWithVerdict call. */
+    getLastOutput: () => {return collector.getCurrent()},
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -152,18 +160,33 @@ function buildCachePrefix(priorOutputs: Array<{ name: string; output: string }>)
 }
 
 // ---------------------------------------------------------------------------
+// Failure feedback
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the failure feedback block injected into the next retry attempt.
+ * Includes the verifier's output so the retry session knows what to fix.
+ *
+ * @param attempt        - The attempt number that failed (1-based).
+ * @param verifierOutput - Full text output from the verifier prompt.
+ */
+function buildFailureFeedback(attempt: number, verifierOutput: string): string {
+  return `--- Attempt ${attempt} — VERDICT:FAIL ---\n${verifierOutput.trim()}\n---\n\n`;
+}
+
+// ---------------------------------------------------------------------------
 // Phase attempt
 // ---------------------------------------------------------------------------
 
 /**
  * Run a single attempt of a phase in a fresh Pi session.
+ * Runs the verifier (if any) and disposes the session before returning.
  *
  * @param phase           - Phase definition containing the callback.
- * @param cachePrefix     - Prior phase output injected into the first prompt.
+ * @param cachePrefix     - Prior phase output (and any failure feedback) injected into the first prompt.
  * @param sessionFilePath - Path where Pi writes the session .jsonl file.
  * @param cwd             - Working directory for the Pi session.
- * @returns                 Total assistant output, optional verifier function, and the live session
- *                          (caller must dispose it after the verifier has run).
+ * @returns                 Total assistant output, verdict, and verifier output text.
  */
 async function runPhaseAttempt(
   phase: PhaseDefinition,
@@ -173,9 +196,8 @@ async function runPhaseAttempt(
   wikiTools: ToolDefinition[],
 ): Promise<{
   output: string;
-  verifier: VerificationFn | null;
-  promptWithVerdict: PromptWithVerdictFn;
-  session: AgentSession;
+  verdict: 'pass' | 'fail';
+  verifierOutput: string;
 }> {
   await mkdir(path.dirname(sessionFilePath), { recursive: true });
 
@@ -189,11 +211,25 @@ async function runPhaseAttempt(
     customTools: wikiTools,
   });
 
-  const { context, promptWithVerdict, getTotal } = createPhaseContext(session, cachePrefix);
+  const { context, promptWithVerdict, getTotal, getLastOutput } = createPhaseContext(
+    session,
+    cachePrefix,
+  );
 
   const result = await phase.callback(context);
   const verifier = typeof result === 'function' ? (result as VerificationFn) : null;
-  return { output: getTotal(), verifier, promptWithVerdict, session };
+
+  let verdict: 'pass' | 'fail' = 'pass';
+  let verifierOutput = '';
+
+  if (verifier !== null) {
+    const pass = await verifier(promptWithVerdict);
+    verifierOutput = getLastOutput();
+    verdict = pass ? 'pass' : 'fail';
+  }
+
+  session.dispose();
+  return { output: getTotal(), verdict, verifierOutput };
 }
 
 // ---------------------------------------------------------------------------
@@ -223,6 +259,7 @@ async function runPhase(
   const attempts: AttemptLog[] = [];
   let lastOutput = '';
   let phaseVerdict: 'pass' | 'fail' = 'pass';
+  let failureFeedback = '';
 
   for (let attempt = 1; attempt <= phase.maxAttempts; attempt++) {
     const sessionFile = path.join(missionLogDir, `phase-${name}-attempt-${attempt}.jsonl`);
@@ -230,18 +267,14 @@ async function runPhase(
     console.log(`[mission] phase: ${name} — attempt ${attempt}/${phase.maxAttempts}`);
 
     const attemptStart = Date.now();
-    const { output, verifier, promptWithVerdict, session } = await runPhaseAttempt(
+    const { output, verdict, verifierOutput } = await runPhaseAttempt(
       phase,
-      cachePrefix,
+      cachePrefix + failureFeedback,
       sessionFile,
       cwd,
       wikiTools,
     );
     lastOutput = output;
-
-    const verdict =
-      verifier === null ? 'pass' : (await verifier(promptWithVerdict)) ? 'pass' : 'fail';
-    session.dispose();
 
     attempts.push({
       sessionFile: path.basename(sessionFile),
@@ -256,7 +289,9 @@ async function runPhase(
       break;
     }
 
-    if (attempt === phase.maxAttempts) {
+    if (attempt < phase.maxAttempts) {
+      failureFeedback = buildFailureFeedback(attempt, verifierOutput);
+    } else {
       console.error(`[mission] phase: ${name} — max attempts (${phase.maxAttempts}) reached`);
       phaseVerdict = 'fail';
     }

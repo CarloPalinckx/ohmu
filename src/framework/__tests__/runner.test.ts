@@ -267,5 +267,27 @@ describe('runMission()', () => {
       // Only 1 session created — cleanup phase never ran
       expect(createAgentSession).toHaveBeenCalledTimes(1);
     });
+
+    it('injects verifier failure output into the next retry attempt', async () => {
+      const verifierFailText = 'Tests are failing: AssertionError in auth.test.ts VERDICT:FAIL';
+      const session1 = createMockSession(['attempt 1 work', verifierFailText]);
+      const session2 = createMockSession(['attempt 2 work', 'VERDICT:PASS']);
+      vi.mocked(createAgentSession)
+        .mockResolvedValueOnce({ session: session1 } as never)
+        .mockResolvedValueOnce({ session: session2 } as never);
+
+      const def = mission(BASE_CONFIG, () => {
+        phase({ name: 'execute', maxAttempts: 3 }, async ({ prompt }) => {
+          await prompt('Do the work');
+          return (promptWithVerdict) => promptWithVerdict('Review the work');
+        });
+      });
+
+      await runMission(def, {}, '/cwd', '/logs');
+
+      const retryPrompt = vi.mocked(session2.prompt).mock.calls[0][0];
+      expect(retryPrompt).toContain('Attempt 1 — VERDICT:FAIL');
+      expect(retryPrompt).toContain('Tests are failing: AssertionError in auth.test.ts');
+    });
   });
 });
