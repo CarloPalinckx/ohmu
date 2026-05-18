@@ -5,7 +5,7 @@
  *   npm run mission <mission-name> [--cwd=<path>] [--<param>=<value> ...]
  *
  * Examples:
- *   npm run mission fix-vulnerability-sdk --cwd=/path/to/repo --identifier=CVE-2021-44228
+ *   npm run mission fix-vulnerability --cwd=/path/to/repo --identifier=CVE-2021-44228
  */
 
 import path from 'node:path';
@@ -50,7 +50,7 @@ function parseArgs(args: string[]): Record<string, string> {
  * Dynamically import a mission by name from `src/missions/<name>.ts`.
  * Expects a default export produced by mission().
  *
- * @param name - Mission file name without extension (e.g. 'fix-vulnerability-sdk').
+ * @param name - Mission file name without extension (e.g. 'fix-vulnerability').
  */
 async function loadMission(name: string): Promise<MissionRun<MissionConfig>> {
   const missionPath = path.resolve(import.meta.dirname, `../missions/${name}.ts`);
@@ -89,8 +89,12 @@ async function main() {
     console.error(`\n[mission] ${sig} received — aborting current turn, verify will still run`);
     ac.abort();
   };
-  process.once('SIGTERM', () => {return onSignal('SIGTERM')});
-  process.once('SIGINT', () => {return onSignal('SIGINT')});
+  process.once('SIGTERM', () => {
+    return onSignal('SIGTERM');
+  });
+  process.once('SIGINT', () => {
+    return onSignal('SIGINT');
+  });
 
   try {
     await run(params, cwd, ac.signal);
