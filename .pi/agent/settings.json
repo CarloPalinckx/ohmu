@@ -1,7 +1,8 @@
 {
-  "lastChangelogVersion": "0.74.0",
+  "lastChangelogVersion": "0.75.2",
   "defaultProvider": "anthropic",
   "defaultModel": "claude-sonnet-4-6",
   "defaultThinkingLevel": "medium",
-  "hideThinkingBlock": false
+  "hideThinkingBlock": false,
+  "shellCommandPrefix": "shopt -s expand_aliases\nalias grep='ag'"
 }

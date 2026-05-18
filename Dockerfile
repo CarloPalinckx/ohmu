@@ -11,7 +11,10 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     git \
     openssh-client \
-    && rm -rf /var/lib/apt/lists/*
+    silversearcher-ag \
+    fd-find \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -s $(which fdfind) /usr/local/bin/fd
 
 # Install gh CLI
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \

@@ -12,6 +12,7 @@
     "start": "tsx src/scripts/run-mission.ts work-on-github-project",
     "mission": "tsx src/scripts/run-mission.ts",
     "generate-templates": "tsx src/scripts/generate-templates.ts",
+    "dashboard": "cd ui && npm run dev",
     "prepare": "husky"
   },
   "lint-staged": {
