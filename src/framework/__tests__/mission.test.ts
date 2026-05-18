@@ -57,7 +57,7 @@ describe('mission()', () => {
 
     await run({ repo: 'myrepo' }, '/workspace');
 
-    expect(createSession).toHaveBeenCalledWith('/workspace', undefined);
+    expect(createSession).toHaveBeenCalledWith('/workspace', undefined, undefined);
     expect(fn).toHaveBeenCalledWith({
       params: { repo: 'myrepo' },
       session: mockSession,
@@ -83,6 +83,6 @@ describe('mission()', () => {
 
     await run({}, '/workspace', ac.signal);
 
-    expect(createSession).toHaveBeenCalledWith('/workspace', ac.signal);
+    expect(createSession).toHaveBeenCalledWith('/workspace', ac.signal, undefined);
   });
 });

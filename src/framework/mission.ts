@@ -1,5 +1,5 @@
 import { type z } from 'zod';
-import { createSession, type MissionSession } from './session.ts';
+import { createSession, type MissionSession, type EscalationConfig } from './session.ts';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -7,7 +7,11 @@ import { createSession, type MissionSession } from './session.ts';
 
 export interface MissionConfig<TSchema extends z.ZodTypeAny = z.ZodTypeAny> {
   parameters: TSchema;
+  /** Model escalation settings. Defaults to haiku → sonnet on stuck detection. */
+  escalation?: EscalationConfig;
 }
+
+export type { EscalationConfig };
 
 export interface MissionContext<TParams> {
   params: TParams;
@@ -49,7 +53,7 @@ export function mission<TConfig extends MissionConfig>(
   fn: (ctx: MissionContext<z.infer<TConfig['parameters']>>) => Promise<void>,
 ): MissionRun<TConfig> {
   const run = async (params: z.infer<TConfig['parameters']>, cwd: string, signal?: AbortSignal) => {
-    const session = await createSession(cwd, signal);
+    const session = await createSession(cwd, signal, config.escalation);
     try {
       await fn({ params, session, cwd });
     } finally {

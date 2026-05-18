@@ -7,6 +7,12 @@ import {
   createAgentSessionServices,
   getAgentDir,
 } from '@earendil-works/pi-coding-agent';
+import {
+  resolveEscalation,
+  subscribeEscalation,
+  type EscalationConfig,
+  type ResolvedEscalation,
+} from './escalation.ts';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -15,6 +21,8 @@ import {
 export interface VerifyOptions {
   maxRetries?: number;
 }
+
+export { type EscalationConfig };
 
 export interface MissionSession {
   prompt(text: string): Promise<void>;
@@ -106,11 +114,20 @@ function getCheckpointId(runtime: AgentSessionRuntime): string | undefined {
  * prompt() resolves cleanly (rather than throwing) so the mission body can
  * still reach its verify() call.
  *
- * @param cwd    - Working directory for the agent and session storage.
- * @param signal - Optional abort signal for graceful shutdown.
+ * @param cwd        - Working directory for the agent and session storage.
+ * @param signal     - Optional abort signal for graceful shutdown.
+ * @param escalation - Optional model escalation config. Defaults to haiku → sonnet.
  */
-export async function createSession(cwd: string, signal?: AbortSignal): Promise<MissionSession> {
+export async function createSession(
+  cwd: string,
+  signal?: AbortSignal,
+  escalation?: EscalationConfig,
+): Promise<MissionSession> {
+  const resolved: ResolvedEscalation = resolveEscalation(escalation);
   const runtime = await buildRuntime(cwd, signal);
+
+  // Start every session on the first (cheapest) model.
+  await runtime.session.setModel(resolved.models[0].model);
 
   // Shared mutable state between prompt() and verify().
   // prompt() writes these before returning; verify() reads them.
@@ -125,8 +142,11 @@ export async function createSession(cwd: string, signal?: AbortSignal): Promise<
      * @param text - The prompt to send to the agent.
      */
     async prompt(text: string): Promise<void> {
+      // Reset to the first model and clear stuck state before each fresh attempt.
+      await runtime.session.setModel(resolved.models[0].model);
       checkpointId = getCheckpointId(runtime);
       lastPromptText = text;
+      const unsubEscalation = subscribeEscalation(runtime.session, resolved);
       const unsub = streamStdout(runtime);
       try {
         await runtime.session.prompt(text);
@@ -136,6 +156,7 @@ export async function createSession(cwd: string, signal?: AbortSignal): Promise<
         if (signal?.aborted) return;
         throw err;
       } finally {
+        unsubEscalation();
         unsub();
       }
     },
@@ -205,6 +226,9 @@ export async function createSession(cwd: string, signal?: AbortSignal): Promise<
         // so a subsequent failure can fork from the correct entry in the new file.
         checkpointId = getCheckpointId(runtime);
 
+        // Fresh attempt on the new fork: start at the first model and allow re-escalation.
+        await runtime.session.setModel(resolved.models[0].model);
+        const retryEscUnsub = subscribeEscalation(runtime.session, resolved);
         const retryUnsub = streamStdout(runtime);
         await runtime.session.prompt(
           `${lastPromptText}\n\n` +
@@ -214,6 +238,7 @@ export async function createSession(cwd: string, signal?: AbortSignal): Promise<
             `Address this feedback in your approach.`,
         );
         retryUnsub();
+        retryEscUnsub();
       }
     },
 

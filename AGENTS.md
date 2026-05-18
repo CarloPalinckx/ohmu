@@ -23,3 +23,5 @@ workspaces/          # target code repos (git clones)
 .logs/               # mission run history
 ui/                  # Next.js dashboard for browsing mission logs
 ```
+
+Update this project structure when folder structure changes.

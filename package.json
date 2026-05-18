@@ -6,7 +6,7 @@
   "scripts": {
     "test": "vitest run --coverage",
     "test:watch": "vitest",
-    "typecheck": "tsc -p tsconfig.framework.json --noEmit",
+    "typecheck": "tsc --noEmit",
     "lint": "eslint src/",
     "format": "prettier --write src/",
     "start": "tsx src/scripts/run-mission.ts work-on-github-project",
@@ -19,7 +19,7 @@
     "src/**/*.ts": [
       "prettier --write",
       "eslint --fix",
-      "bash -c 'tsc -p tsconfig.framework.json --noEmit'",
+      "bash -c 'tsc --noEmit'",
       "bash -c 'vitest run --coverage'"
     ]
   },
@@ -36,6 +36,7 @@
     "husky": "^9.1.7",
     "lint-staged": "^17.0.4",
     "prettier": "^3.8.3",
+    "typescript": "5.8",
     "vitest": "^4.1.6"
   }
 }

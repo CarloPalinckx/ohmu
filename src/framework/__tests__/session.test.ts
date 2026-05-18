@@ -41,6 +41,7 @@ interface MockSession {
   abort: ReturnType<typeof vi.fn>;
   subscribe: ReturnType<typeof vi.fn>;
   prompt: ReturnType<typeof vi.fn>;
+  setModel: ReturnType<typeof vi.fn>;
   sessionFile: string | undefined;
 }
 
@@ -55,6 +56,7 @@ function buildMockRuntime(sessionFile: string | undefined = '/tmp/test.json'): M
     abort: vi.fn(),
     subscribe: vi.fn(),
     prompt: vi.fn(),
+    setModel: vi.fn(),
     sessionFile,
   };
   return { session, fork: vi.fn(), dispose: vi.fn() };
