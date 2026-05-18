@@ -63,3 +63,5 @@ These guidelines are working if: fewer unnecessary changes in diffs, fewer rewri
 ## Preferences
 
 - Add docbloc to the functions you write.
+- instead of using `grep`, prefer `gd` where possible
+- instead of using `find`, prefer `fd` where possible

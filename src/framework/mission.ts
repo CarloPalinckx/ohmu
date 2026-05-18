@@ -1,5 +1,6 @@
 import { type z } from 'zod';
 import { createSession, type MissionSession, type EscalationConfig } from './session.ts';
+import { type WorktreeConfig } from './worktree.ts';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -9,6 +10,8 @@ export interface MissionConfig<TSchema extends z.ZodTypeAny = z.ZodTypeAny> {
   parameters: TSchema;
   /** Model escalation settings. Defaults to haiku → sonnet on stuck detection. */
   escalation?: EscalationConfig;
+  /** Git worktree configuration. If provided, mission runs in an isolated worktree. */
+  worktree?: WorktreeConfig;
 }
 
 export type { EscalationConfig };
@@ -53,7 +56,7 @@ export function mission<TConfig extends MissionConfig>(
   fn: (ctx: MissionContext<z.infer<TConfig['parameters']>>) => Promise<void>,
 ): MissionRun<TConfig> {
   const run = async (params: z.infer<TConfig['parameters']>, cwd: string, signal?: AbortSignal) => {
-    const session = await createSession(cwd, signal, config.escalation);
+    const session = await createSession(cwd, signal, config.escalation, config.worktree);
     try {
       await fn({ params, session, cwd });
     } finally {

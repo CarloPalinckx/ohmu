@@ -13,6 +13,7 @@ import {
   type EscalationConfig,
   type ResolvedEscalation,
 } from './escalation.ts';
+import { createWorktree, type WorktreeConfig, type WorktreeHandle } from './worktree.ts';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -114,17 +115,32 @@ function getCheckpointId(runtime: AgentSessionRuntime): string | undefined {
  * prompt() resolves cleanly (rather than throwing) so the mission body can
  * still reach its verify() call.
  *
- * @param cwd        - Working directory for the agent and session storage.
- * @param signal     - Optional abort signal for graceful shutdown.
- * @param escalation - Optional model escalation config. Defaults to haiku → sonnet.
+ * If worktreeConfig is provided, an isolated git worktree is created and used
+ * as the working directory for the agent. The worktree is automatically cleaned
+ * up when the session is disposed.
+ *
+ * @param cwd               - Working directory for the agent and session storage.
+ * @param signal            - Optional abort signal for graceful shutdown.
+ * @param escalation        - Optional model escalation config. Defaults to haiku → sonnet.
+ * @param worktreeConfig    - Optional git worktree config for isolated execution.
  */
 export async function createSession(
   cwd: string,
   signal?: AbortSignal,
   escalation?: EscalationConfig,
+  worktreeConfig?: WorktreeConfig,
 ): Promise<MissionSession> {
   const resolved: ResolvedEscalation = resolveEscalation(escalation);
-  const runtime = await buildRuntime(cwd, signal);
+
+  // Create a worktree if requested.
+  let worktreeHandle: WorktreeHandle | undefined;
+  let effectiveCwd = cwd;
+  if (worktreeConfig) {
+    worktreeHandle = await createWorktree(cwd, worktreeConfig);
+    effectiveCwd = worktreeHandle.path;
+  }
+
+  const runtime = await buildRuntime(effectiveCwd, signal);
 
   // Start every session on the first (cheapest) model.
   await runtime.session.setModel(resolved.models[0].model);
@@ -253,6 +269,10 @@ export async function createSession(
       await runtime.dispose();
       if (file) {
         console.log(`[session] saved: ${file}`);
+      }
+      if (worktreeHandle) {
+        await worktreeHandle.cleanup();
+        console.log(`[session] worktree cleaned up: ${worktreeHandle.path}`);
       }
     },
   };

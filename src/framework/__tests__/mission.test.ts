@@ -57,7 +57,7 @@ describe('mission()', () => {
 
     await run({ repo: 'myrepo' }, '/workspace');
 
-    expect(createSession).toHaveBeenCalledWith('/workspace', undefined, undefined);
+    expect(createSession).toHaveBeenCalledWith('/workspace', undefined, undefined, undefined);
     expect(fn).toHaveBeenCalledWith({
       params: { repo: 'myrepo' },
       session: mockSession,
@@ -83,6 +83,18 @@ describe('mission()', () => {
 
     await run({}, '/workspace', ac.signal);
 
-    expect(createSession).toHaveBeenCalledWith('/workspace', ac.signal, undefined);
+    expect(createSession).toHaveBeenCalledWith('/workspace', ac.signal, undefined, undefined);
+  });
+
+  it('forwards worktree config to createSession', async () => {
+    const config = {
+      parameters: z.object({}),
+      worktree: { ref: 'main' },
+    };
+    const run = mission(config, async () => {});
+
+    await run({}, '/workspace');
+
+    expect(createSession).toHaveBeenCalledWith('/workspace', undefined, undefined, { ref: 'main' });
   });
 });
