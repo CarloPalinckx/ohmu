@@ -1,56 +1,18 @@
-import { z } from 'zod';
-import type { PhaseDefinition } from './phase.ts';
+import { type z } from 'zod';
+import { createSession, type MissionSession } from './session.ts';
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-/**
- * Static configuration for a mission.
- */
-export interface MissionConfig<TParams extends z.ZodTypeAny = z.ZodTypeAny> {
-  /** Unique mission name, used for logging and discovery. */
-  name: string;
-  /** Zod schema describing the parameters this mission accepts. */
-  parameters: TParams;
-  /** Tool names made available to every phase in this mission. */
-  tools: string[];
+export interface MissionConfig<TSchema extends z.ZodTypeAny = z.ZodTypeAny> {
+  parameters: TSchema;
 }
 
-/**
- * Arguments passed to the mission callback.
- */
 export interface MissionContext<TParams> {
-  parameters: TParams;
-}
-
-/**
- * A fully assembled mission, ready to be executed by the runner.
- */
-export interface MissionDefinition<TParams = unknown> {
-  config: MissionConfig;
-  phases: PhaseDefinition[];
-  run: (parameters: TParams) => PhaseDefinition[];
-}
-
-// ---------------------------------------------------------------------------
-// Phase collector
-//
-// phase() calls inside the mission callback push to this array.
-// mission() sets it up before invoking the callback and reads it after.
-// ---------------------------------------------------------------------------
-
-let _currentPhases: PhaseDefinition[] | null = null;
-
-/**
- * Called by phase() to register itself with the active mission.
- * Throws if called outside of a mission() callback.
- */
-export function registerPhase(phase: PhaseDefinition): void {
-  if (_currentPhases === null) {
-    throw new Error('phase() must be called inside a mission() callback.');
-  }
-  _currentPhases.push(phase);
+  params: TParams;
+  session: MissionSession;
+  cwd: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -58,36 +20,42 @@ export function registerPhase(phase: PhaseDefinition): void {
 // ---------------------------------------------------------------------------
 
 /**
- * Define a mission — a named, parameterized unit of work composed of phases.
+ * Define a mission. Accepts a config (with Zod parameter schema) and a
+ * callback that receives { params, session, cwd }. Returns the standardized
+ * (params, cwd) => Promise<void> run function.
  *
- * The callback is invoked immediately to collect phase definitions.
- * Phases are registered in declaration order via phase() calls inside the callback.
+ * The session is created and disposed automatically — the callback only
+ * needs to call session.prompt() and session.verify().
  *
- * @param config   - Mission name, parameter schema, and available tools.
- * @param callback - Defines the phases that make up this mission.
- * @returns          A MissionDefinition ready to be passed to the runner.
+ * @param config - Mission config carrying the Zod parameter schema.
+ * @param fn     - Mission body, receiving typed params, a managed session, and cwd.
  *
  * @example
- * export default mission(config, ({ parameters }) => {
- *   phase(({ prompt }) => { prompt(`...`); });
+ * export const config = { parameters: z.object({ name: z.string() }) };
+ *
+ * export default mission(config, async ({ params, session }) => {
+ *   await session.prompt(`Do something with ${params.name}`);
+ *   await session.verify(`Confirm it worked.`);
  * });
  */
-export function mission<TSchema extends z.ZodTypeAny>(
-  config: MissionConfig<TSchema>,
-  callback: (context: MissionContext<z.infer<TSchema>>) => void,
-): MissionDefinition<z.infer<TSchema>> {
-  return {
-    config: config as MissionConfig,
-    phases: [],
-    run(parameters: z.infer<TSchema>): PhaseDefinition[] {
-      _currentPhases = [];
-      try {
-        callback({ parameters });
-        this.phases = _currentPhases;
-        return this.phases;
-      } finally {
-        _currentPhases = null;
-      }
-    },
+export type MissionRun<TConfig extends MissionConfig> = ((
+  params: z.infer<TConfig['parameters']>,
+  cwd: string,
+  signal?: AbortSignal,
+) => Promise<void>) & { config: TConfig };
+
+export function mission<TConfig extends MissionConfig>(
+  config: TConfig,
+  fn: (ctx: MissionContext<z.infer<TConfig['parameters']>>) => Promise<void>,
+): MissionRun<TConfig> {
+  const run = async (params: z.infer<TConfig['parameters']>, cwd: string, signal?: AbortSignal) => {
+    const session = await createSession(cwd, signal);
+    try {
+      await fn({ params, session, cwd });
+    } finally {
+      await session.dispose();
+    }
   };
+  run.config = config;
+  return run as MissionRun<TConfig>;
 }

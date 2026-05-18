@@ -1,16 +1,15 @@
 /**
- * CLI entry point for running a mission by name.
+ * CLI entry point for running SDK missions.
  *
  * Usage:
- *   tsx src/scripts/run-mission.ts <mission-name> [--cwd=<path>] [--logs-dir=<path>] [--<param>=<value> ...]
+ *   npm run mission <mission-name> [--cwd=<path>] [--<param>=<value> ...]
  *
  * Examples:
- *   tsx src/scripts/run-mission.ts fix-vulnerability --cwd=/path/to/repo --identifier=CWE-639
- *   tsx src/scripts/run-mission.ts write-wiki --about="$(cat session.txt)"
+ *   npm run mission fix-vulnerability-sdk --cwd=/path/to/repo --identifier=CVE-2021-44228
  */
 
 import path from 'node:path';
-import { runMission } from '../framework/runner.ts';
+import type { MissionRun, MissionConfig } from '../framework/mission.ts';
 
 // ---------------------------------------------------------------------------
 // Argument parsing
@@ -18,7 +17,6 @@ import { runMission } from '../framework/runner.ts';
 
 /**
  * Parse `--key=value` and `--key value` CLI arguments into a plain object.
- * Arguments without `--` prefix are ignored (used for positional args).
  *
  * @param args - Raw process.argv slice (after the script path).
  */
@@ -27,12 +25,9 @@ function parseArgs(args: string[]): Record<string, string> {
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (!arg.startsWith('--')) continue;
-
     const eqIndex = arg.indexOf('=');
     if (eqIndex !== -1) {
-      const key = arg.slice(2, eqIndex);
-      const value = arg.slice(eqIndex + 1);
-      result[key] = value;
+      result[arg.slice(2, eqIndex)] = arg.slice(eqIndex + 1);
     } else {
       const key = arg.slice(2);
       const next = args[i + 1];
@@ -53,18 +48,17 @@ function parseArgs(args: string[]): Record<string, string> {
 
 /**
  * Dynamically import a mission by name from `src/missions/<name>.ts`.
+ * Expects a default export produced by mission().
  *
- * @param name - Mission name (e.g. 'fix-vulnerability').
+ * @param name - Mission file name without extension (e.g. 'fix-vulnerability-sdk').
  */
-async function loadMission(name: string) {
+async function loadMission(name: string): Promise<MissionRun<MissionConfig>> {
   const missionPath = path.resolve(import.meta.dirname, `../missions/${name}.ts`);
   const mod = await import(missionPath);
-   
-  const definition = mod.default;
-  if (!definition || typeof definition.run !== 'function') {
-    throw new Error(`Mission "${name}" did not export a valid MissionDefinition.`);
+  if (typeof mod.default !== 'function' || !mod.default.config) {
+    throw new Error(`Mission "${name}" must have a default export produced by mission().`);
   }
-  return definition;
+  return mod.default as MissionRun<MissionConfig>;
 }
 
 // ---------------------------------------------------------------------------
@@ -75,38 +69,40 @@ async function main() {
   const [, , missionName, ...rest] = process.argv;
 
   if (!missionName || missionName.startsWith('--')) {
-    console.error(
-      'Usage: tsx src/scripts/run-mission.ts <mission-name> [--cwd=<path>] [--<param>=<value> ...]',
-    );
+    console.error('Usage: npm run mission <mission-name> [--cwd=<path>] [--<param>=<value> ...]');
     process.exit(1);
   }
 
   const args = parseArgs(rest);
+  const { cwd: rawCwd, ...rawParams } = args;
+  const cwd = rawCwd ? path.resolve(rawCwd) : process.cwd();
 
-  const cwd = args['cwd'] ? path.resolve(args['cwd']) : process.cwd();
-  const logsDir = args['logs-dir']
-    ? path.resolve(args['logs-dir'])
-    : path.join(process.cwd(), '.logs');
+  const run = await loadMission(missionName);
+  const params = run.config.parameters.parse(rawParams);
 
-  // Strip framework-level flags from parameters
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const { cwd: _cwd, 'logs-dir': _logsDir, ...parameters } = args;
+  console.log(`[mission] ${missionName}`);
+  console.log(`[mission] cwd: ${cwd}`);
+  console.log(`[mission] params: ${JSON.stringify(params)}`);
 
-  const definition = await loadMission(missionName);
+  const ac = new AbortController();
+  const onSignal = (sig: string) => {
+    console.error(`\n[mission] ${sig} received — aborting current turn, verify will still run`);
+    ac.abort();
+  };
+  process.once('SIGTERM', () => {return onSignal('SIGTERM')});
+  process.once('SIGINT', () => {return onSignal('SIGINT')});
 
-  // Validate parameters against the mission's Zod schema
-  const parsed = definition.config.parameters.parse(parameters);
+  try {
+    await run(params, cwd, ac.signal);
+  } finally {
+    process.off('SIGTERM', onSignal);
+    process.off('SIGINT', onSignal);
+  }
 
-  console.log(`[run-mission] mission: ${missionName}`);
-  console.log(`[run-mission] cwd: ${cwd}`);
-  console.log(`[run-mission] logs-dir: ${logsDir}`);
-  console.log(`[run-mission] parameters: ${JSON.stringify(parsed)}`);
-
-  const missionLogDir = await runMission(definition, parsed, cwd, logsDir);
-  console.log(`[run-mission] logs: ${missionLogDir}`);
+  console.log(`[mission] done`);
 }
 
 main().catch((err) => {
-  console.error('[run-mission] fatal:', err);
+  console.error('[mission] fatal:', err);
   process.exit(1);
 });

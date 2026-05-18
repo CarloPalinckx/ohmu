@@ -1,4 +1,9 @@
 Dockerfile
 .dockerignore
 .bash_history
+.cache/
+.npm/
+.config/
+.gitconfig
+.local/
 .pi/agent/sessions/

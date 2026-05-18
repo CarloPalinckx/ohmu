@@ -1,6 +1,7 @@
 .npm/
 .pi/agent/auth.json
 .pi/agent/sessions/
+.pi/agent/pi-crash.log
 .local/
 .config/gh/
 node_modules/
@@ -12,3 +13,8 @@ coverage/
 .gitconfig
 .ssh/
 wiki/.obsidian/
+.DS_Store
+.claude/
+pi-session-*.html
+ui/tsconfig.tsbuildinfo
+

@@ -1,27 +1,27 @@
-export interface MissionAttempt {
-  sessionFile: string;
-  durationMs: number;
-  verdict: "pass" | "fail";
-}
-
-export interface MissionPhase {
-  name: string;
+export interface Session {
+  /** UUID from the session filename (after the underscore). */
+  id: string;
+  /** Absolute path to the JSONL file. */
+  file: string;
+  /** Working directory stored in the session header. */
+  cwd: string;
+  /** Human-readable workspace name — basename of cwd. */
+  workspace: string;
+  /** ISO timestamp from the session header. */
   startedAt: string;
-  completedAt: string;
-  durationMs: number;
-  verdict: "pass" | "fail";
-  attempts: MissionAttempt[];
-}
-
-export interface Mission {
-  missionId: string;
-  mission: string;
-  parameters: Record<string, unknown>;
-  startedAt: string;
-  completedAt: string;
-  durationMs: number;
-  outcome: "success" | "error";
-  phases: MissionPhase[];
+  /** ISO timestamp of the last message, or null if empty. */
+  endedAt: string | null;
+  /** Duration in ms, or null if endedAt is unavailable. */
+  durationMs: number | null;
+  /** Derived from VERDICT lines in assistant messages. */
+  outcome: "pass" | "fail" | "unknown";
+  /** Total number of message entries in the session. */
+  messageCount: number;
+  /**
+   * Absolute path of the parent session file, if this session was forked
+   * from another (e.g. a verify() retry branch).
+   */
+  parentSession: string | null;
 }
 
 // ── Transcript ──────────────────────────────────────────────────────────────
@@ -40,7 +40,6 @@ export interface UserMessage {
 export interface AssistantMessage {
   role: "assistant";
   content: ContentBlock[];
-  /** anthropic-messages metadata */
   usage?: { input: number; output: number; totalTokens: number; cost?: { total: number } };
   model?: string;
 }
@@ -56,15 +55,13 @@ export interface ToolResultMessage {
 export type AnyMessage = UserMessage | AssistantMessage | ToolResultMessage;
 
 export interface TranscriptEvent {
-  type: "session" | "model_change" | "thinking_level_change" | "message";
+  type: "session" | "message" | "model_change" | "thinking_level_change" | string;
   id: string;
   parentId: string | null;
   timestamp: string;
   message?: AnyMessage;
-  /** present on model_change */
   modelId?: string;
   provider?: string;
-  /** present on thinking_level_change */
   thinkingLevel?: string;
   [key: string]: unknown;
 }
