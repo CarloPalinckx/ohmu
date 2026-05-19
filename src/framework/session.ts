@@ -23,7 +23,7 @@ export interface VerifyOptions {
   maxRetries?: number;
 }
 
-export { type EscalationConfig };
+export type { EscalationConfig };
 
 export interface MissionSession {
   prompt(text: string): Promise<void>;
@@ -72,15 +72,116 @@ async function buildRuntime(cwd: string, signal?: AbortSignal): Promise<AgentSes
 
 /**
  * Subscribe to the runtime's current session and stream assistant text to stdout.
+ * Also outputs diagnostic info about what Pi is doing internally.
  * Must be re-called after runtime.fork() since fork replaces runtime.session.
  *
  * @param runtime - The active agent session runtime.
+ * @param verbose - If true, show all diagnostic events. If false, show only major events.
+ * @param captureText - Optional callback to capture text deltas (for verification).
  * @returns Unsubscribe function.
  */
-function streamStdout(runtime: AgentSessionRuntime): () => void {
+function streamStdout(
+  runtime: AgentSessionRuntime,
+  verbose = true,
+  captureText?: (text: string) => void,
+): () => void {
   return runtime.session.subscribe((event) => {
-    if (event.type === 'message_update' && event.assistantMessageEvent.type === 'text_delta') {
-      process.stdout.write(event.assistantMessageEvent.delta);
+    switch (event.type) {
+      case 'message_update': {
+        const evt = event.assistantMessageEvent;
+        if (evt.type === 'text_delta') {
+          process.stdout.write(evt.delta);
+          captureText?.(evt.delta);
+        } else if (evt.type === 'text_start' && verbose) {
+          process.stderr.write('\n[pi] generating response...\n');
+        } else if (evt.type === 'thinking_start' && verbose) {
+          process.stderr.write('[pi] thinking...\n');
+        } else if (evt.type === 'toolcall_start' && verbose) {
+          process.stderr.write(`[pi] calling tool: ${evt.contentIndex}\n`);
+        }
+        break;
+      }
+
+      case 'tool_execution_start': {
+        const args = JSON.stringify(event.args).substring(0, 80);
+        process.stderr.write(`[pi] → executing ${event.toolName}(${args}${JSON.stringify(event.args).length > 80 ? '...' : ''})\n`);
+        break;
+      }
+
+      case 'tool_execution_update': {
+        if (verbose && event.partialResult?.content?.[0]?.type === 'text') {
+          const preview = event.partialResult.content[0].text.substring(0, 40);
+          process.stderr.write(`[pi]   (output: ${preview}...)\n`);
+        }
+        break;
+      }
+
+      case 'tool_execution_end': {
+        if (event.isError) {
+          process.stderr.write(`[pi] ✗ ${event.toolName} failed\n`);
+        } else {
+          process.stderr.write(`[pi] ✓ ${event.toolName} done\n`);
+        }
+        break;
+      }
+
+      case 'turn_start': {
+        if (verbose) {
+          process.stderr.write(`[pi] turn start\n`);
+        }
+        break;
+      }
+
+      case 'turn_end': {
+        if (verbose) {
+          process.stderr.write(`[pi] turn complete\n`);
+        }
+        break;
+      }
+
+      case 'compaction_start': {
+        process.stderr.write(`[pi] compacting context (${event.reason})...\n`);
+        break;
+      }
+
+      case 'compaction_end': {
+        if (event.result) {
+          process.stderr.write(`[pi] compaction done: ${event.result.tokensBefore} → ${event.result.tokensBefore - event.result.summary.length} tokens\n`);
+        } else if (event.aborted) {
+          process.stderr.write(`[pi] compaction aborted\n`);
+        } else {
+          process.stderr.write(`[pi] compaction failed\n`);
+        }
+        break;
+      }
+
+      case 'auto_retry_start': {
+        process.stderr.write(`[pi] retrying (attempt ${event.attempt}/${event.maxAttempts}, delay ${event.delayMs}ms)...\n`);
+        break;
+      }
+
+      case 'auto_retry_end': {
+        if (event.success) {
+          process.stderr.write(`[pi] retry succeeded\n`);
+        } else {
+          process.stderr.write(`[pi] retry failed after ${event.attempt} attempts\n`);
+        }
+        break;
+      }
+
+      case 'agent_start': {
+        if (verbose) {
+          process.stderr.write(`[pi] agent starting...\n`);
+        }
+        break;
+      }
+
+      case 'agent_end': {
+        if (verbose) {
+          process.stderr.write(`[pi] agent done\n`);
+        }
+        break;
+      }
     }
   });
 }
@@ -123,12 +224,14 @@ function getCheckpointId(runtime: AgentSessionRuntime): string | undefined {
  * @param signal            - Optional abort signal for graceful shutdown.
  * @param escalation        - Optional model escalation config. Defaults to haiku → sonnet.
  * @param worktreeConfig    - Optional git worktree config for isolated execution.
+ * @param verbose           - If true (default), show all diagnostic events. If false, show only major events.
  */
 export async function createSession(
   cwd: string,
   signal?: AbortSignal,
   escalation?: EscalationConfig,
   worktreeConfig?: WorktreeConfig,
+  verbose = true,
 ): Promise<MissionSession> {
   const resolved: ResolvedEscalation = resolveEscalation(escalation);
 
@@ -162,8 +265,9 @@ export async function createSession(
       await runtime.session.setModel(resolved.models[0].model);
       checkpointId = getCheckpointId(runtime);
       lastPromptText = text;
+      
       const unsubEscalation = subscribeEscalation(runtime.session, resolved);
-      const unsub = streamStdout(runtime);
+      const unsub = streamStdout(runtime, verbose);
       try {
         await runtime.session.prompt(text);
       } catch (err) {
@@ -199,38 +303,54 @@ export async function createSession(
         `- "VERDICT: PASS"\n` +
         `- "VERDICT: FAIL: <reason>"`;
 
-      for (let attempt = 0; attempt < maxRetries; attempt++) {
-        let verifyOutput = '';
-        const unsub = runtime.session.subscribe((event) => {
-          if (
-            event.type === 'message_update' &&
-            event.assistantMessageEvent.type === 'text_delta'
-          ) {
-            process.stdout.write(event.assistantMessageEvent.delta);
-            verifyOutput += event.assistantMessageEvent.delta;
-          }
-        });
-        await runtime.session.prompt(verifyInstruction);
-        unsub();
 
-        if (verifyOutput.includes('VERDICT: PASS')) return;
+
+      for (let attempt = 0; attempt < maxRetries; attempt++) {
+
+        let verifyOutput = '';
+        const unsub = streamStdout(runtime, verbose, (text) => {
+          verifyOutput += text;
+        });
+        try {
+          await runtime.session.prompt(verifyInstruction);
+        } catch (err) {
+          // If this is the last attempt, re-throw so the caller sees a real error.
+          if (attempt === maxRetries - 1) throw err;
+          // Otherwise treat a thrown prompt as a retryable failure and fall through.
+          verifyOutput = `(prompt error: ${err instanceof Error ? err.message : String(err)})`;
+        } finally {
+          unsub();
+        }
+
+        if (verifyOutput.includes('VERDICT: PASS')) {
+          return;
+        }
 
         const isFail = /VERDICT:\s*FAIL/i.test(verifyOutput);
         if (!isFail) {
-          throw new Error(
-            `verifier did not produce a verdict — check the verify prompt or model output`,
-          );
+          // No verdict produced at all (empty output or prompt error). Treat as
+          // a retryable failure so the retry/fork logic below runs, rather than
+          // throwing immediately without giving the agent another chance.
+          if (attempt === maxRetries - 1) {
+            throw new Error(
+              `verifier did not produce a verdict after ${maxRetries} attempt(s) — check the verify prompt or model output`,
+            );
+          }
+          // Fall through to the fork-and-retry path below.
         }
 
         if (attempt === maxRetries - 1) {
           const match = verifyOutput.match(/VERDICT: FAIL[:\s]+(.+)/s);
           const reason = match?.[1]?.trim() ?? 'no reason given';
+
           throw new Error(`verification failed after ${maxRetries} attempt(s): ${reason}`);
         }
 
         if (!checkpointId) {
+
           throw new Error(`cannot retry — no checkpoint entry to fork from`);
         }
+        
 
         console.log(
           `\nverification failed (attempt ${attempt + 1}/${maxRetries}), forking and retrying...`,
@@ -245,7 +365,7 @@ export async function createSession(
         // Fresh attempt on the new fork: start at the first model and allow re-escalation.
         await runtime.session.setModel(resolved.models[0].model);
         const retryEscUnsub = subscribeEscalation(runtime.session, resolved);
-        const retryUnsub = streamStdout(runtime);
+        const retryUnsub = streamStdout(runtime, verbose);
         await runtime.session.prompt(
           `${lastPromptText}\n\n` +
             `---\n` +
