@@ -2,7 +2,6 @@ import {
   type AgentSessionRuntime,
   type CreateAgentSessionRuntimeFactory,
   type ExtensionAPI,
-  DefaultResourceLoader,
   SessionManager,
   createAgentSessionFromServices,
   createAgentSessionRuntime,
@@ -122,6 +121,15 @@ These guidelines are working if: fewer unnecessary changes in diffs, fewer rewri
  */
 function enforceSearchTools(pi: ExtensionAPI) {
   pi.on('tool_call', async (event, _ctx) => {
+    // Block the native grep/find tools directly.
+    if (isToolCallEventType('grep', event)) {
+      return { block: true, reason: '`grep` is not allowed — use `ag <pattern> [path]` instead' };
+    }
+    if (isToolCallEventType('find', event)) {
+      return { block: true, reason: '`find` is not allowed — use `fd <pattern> [path]` instead' };
+    }
+
+    // Also block grep/find when invoked as shell commands inside bash.
     if (!isToolCallEventType('bash', event)) return;
 
     const cmd = event.input.command;
@@ -144,18 +152,13 @@ async function buildRuntime(cwd: string, signal?: AbortSignal): Promise<AgentSes
     sessionManager,
     sessionStartEvent,
   }) => {
-    // Configure resource loader with custom system prompt and enforce-search-tools extension
-    const loader = new DefaultResourceLoader({
-      cwd: effectiveCwd,
-      agentDir: getAgentDir(),
-      systemPromptOverride: () => SYSTEM_PROMPT,
-      extensionFactories: [enforceSearchTools],
-    });
-    await loader.reload();
-
     const services = await createAgentSessionServices({
       cwd: effectiveCwd,
-      resourceLoader: loader,
+      agentDir: getAgentDir(),
+      resourceLoaderOptions: {
+        systemPromptOverride: () => {return SYSTEM_PROMPT},
+        extensionFactories: [enforceSearchTools],
+      },
     });
     return {
       ...(await createAgentSessionFromServices({ services, sessionManager, sessionStartEvent })),
@@ -211,7 +214,9 @@ function streamStdout(
 
       case 'tool_execution_start': {
         const args = JSON.stringify(event.args).substring(0, 80);
-        process.stderr.write(`[pi] → executing ${event.toolName}(${args}${JSON.stringify(event.args).length > 80 ? '...' : ''})\n`);
+        process.stderr.write(
+          `[pi] → executing ${event.toolName}(${args}${JSON.stringify(event.args).length > 80 ? '...' : ''})\n`,
+        );
         break;
       }
 
@@ -253,7 +258,9 @@ function streamStdout(
 
       case 'compaction_end': {
         if (event.result) {
-          process.stderr.write(`[pi] compaction done: ${event.result.tokensBefore} → ${event.result.tokensBefore - event.result.summary.length} tokens\n`);
+          process.stderr.write(
+            `[pi] compaction done: ${event.result.tokensBefore} → ${event.result.tokensBefore - event.result.summary.length} tokens\n`,
+          );
         } else if (event.aborted) {
           process.stderr.write(`[pi] compaction aborted\n`);
         } else {
@@ -263,7 +270,9 @@ function streamStdout(
       }
 
       case 'auto_retry_start': {
-        process.stderr.write(`[pi] retrying (attempt ${event.attempt}/${event.maxAttempts}, delay ${event.delayMs}ms)...\n`);
+        process.stderr.write(
+          `[pi] retrying (attempt ${event.attempt}/${event.maxAttempts}, delay ${event.delayMs}ms)...\n`,
+        );
         break;
       }
 
@@ -372,7 +381,7 @@ export async function createSession(
       await runtime.session.setModel(resolved.models[0].model);
       checkpointId = getCheckpointId(runtime);
       lastPromptText = text;
-      
+
       const unsubEscalation = subscribeEscalation(runtime.session, resolved);
       const unsub = streamStdout(runtime, verbose);
       try {
@@ -410,10 +419,7 @@ export async function createSession(
         `- "VERDICT: PASS"\n` +
         `- "VERDICT: FAIL: <reason>"`;
 
-
-
       for (let attempt = 0; attempt < maxRetries; attempt++) {
-
         let verifyOutput = '';
         const unsub = streamStdout(runtime, verbose, (text) => {
           verifyOutput += text;
@@ -454,10 +460,8 @@ export async function createSession(
         }
 
         if (!checkpointId) {
-
           throw new Error(`cannot retry — no checkpoint entry to fork from`);
         }
-        
 
         console.log(
           `\nverification failed (attempt ${attempt + 1}/${maxRetries}), forking and retrying...`,

@@ -13,6 +13,11 @@ vi.mock('@earendil-works/pi-coding-agent', () => ({
     create: vi.fn(() => ({})),
     open: vi.fn(),
   },
+  isToolCallEventType: (toolName: string, event: any) => event.toolName === toolName,
+}));
+
+vi.mock('../worktree.ts', () => ({
+  createWorktree: vi.fn(),
 }));
 
 import {
@@ -21,6 +26,7 @@ import {
   createAgentSessionServices,
   SessionManager,
 } from '@earendil-works/pi-coding-agent';
+import { createWorktree } from '../worktree.ts';
 import { createSession } from '../session.ts';
 
 // ---------------------------------------------------------------------------
@@ -77,6 +83,7 @@ let lastSubscribeCb: ((e: unknown) => void) | undefined;
 beforeEach(() => {
   vi.clearAllMocks();
   vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+  vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
   vi.spyOn(console, 'log').mockImplementation(() => {});
 
   lastSubscribeCb = undefined;
@@ -127,7 +134,14 @@ describe('createSession()', () => {
 
   it('invokes the SDK factory, exercising createAgentSessionServices and createAgentSessionFromServices', async () => {
     await createSession('/cwd');
-    expect(createAgentSessionServices).toHaveBeenCalledWith({ cwd: '/cwd' });
+    expect(createAgentSessionServices).toHaveBeenCalledWith({
+      cwd: '/cwd',
+      agentDir: expect.any(String),
+      resourceLoaderOptions: {
+        systemPromptOverride: expect.any(Function),
+        extensionFactories: expect.any(Array),
+      },
+    });
     expect(createAgentSessionFromServices).toHaveBeenCalled();
   });
 
@@ -306,5 +320,308 @@ describe('getCheckpointId (internal, exercised via prompt)', () => {
       'cannot retry — no checkpoint entry',
     );
     await session.dispose();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// streamStdout event handling
+// ---------------------------------------------------------------------------
+
+describe('streamStdout event handling', () => {
+  function fire(event: unknown) {
+    lastSubscribeCb?.(event);
+  }
+
+  it('handles all message_update sub-types (verbose=true)', async () => {
+    const session = await createSession('/cwd');
+    await session.prompt('task'); // sets lastSubscribeCb via subscribe mock
+
+    fire({ type: 'message_update', assistantMessageEvent: { type: 'text_start' } });
+    fire({ type: 'message_update', assistantMessageEvent: { type: 'thinking_start' } });
+    fire({
+      type: 'message_update',
+      assistantMessageEvent: { type: 'toolcall_start', contentIndex: 2 },
+    });
+    fire({ type: 'message_update', assistantMessageEvent: { type: 'unrecognised' } });
+
+    expect(process.stderr.write).toHaveBeenCalledWith(
+      expect.stringContaining('generating response'),
+    );
+    expect(process.stderr.write).toHaveBeenCalledWith(expect.stringContaining('thinking'));
+    expect(process.stderr.write).toHaveBeenCalledWith(expect.stringContaining('calling tool'));
+    await session.dispose();
+  });
+
+  it('suppresses verbose-only message_update events when verbose=false', async () => {
+    const session = await createSession('/cwd', undefined, undefined, undefined, false);
+    await session.prompt('task');
+
+    fire({ type: 'message_update', assistantMessageEvent: { type: 'text_start' } });
+    fire({ type: 'message_update', assistantMessageEvent: { type: 'thinking_start' } });
+    fire({
+      type: 'message_update',
+      assistantMessageEvent: { type: 'toolcall_start', contentIndex: 1 },
+    });
+
+    expect(process.stderr.write).not.toHaveBeenCalledWith(
+      expect.stringContaining('generating response'),
+    );
+    await session.dispose();
+  });
+
+  it('handles tool_execution_start with short and long args', async () => {
+    const session = await createSession('/cwd');
+    await session.prompt('task');
+
+    fire({ type: 'tool_execution_start', toolName: 'bash', args: { command: 'ls' } });
+    fire({ type: 'tool_execution_start', toolName: 'bash', args: { command: 'x'.repeat(100) } });
+
+    expect(process.stderr.write).toHaveBeenCalledWith(expect.stringContaining('executing bash'));
+    await session.dispose();
+  });
+
+  it('handles tool_execution_update with and without text content', async () => {
+    const session = await createSession('/cwd');
+    await session.prompt('task');
+
+    fire({
+      type: 'tool_execution_update',
+      partialResult: { content: [{ type: 'text', text: 'hello world' }] },
+    });
+    fire({ type: 'tool_execution_update', partialResult: { content: [{ type: 'image' }] } });
+    fire({ type: 'tool_execution_update', partialResult: null });
+
+    expect(process.stderr.write).toHaveBeenCalledWith(
+      expect.stringContaining('output: hello world'),
+    );
+    await session.dispose();
+  });
+
+  it('handles tool_execution_end for success and error', async () => {
+    const session = await createSession('/cwd');
+    await session.prompt('task');
+
+    fire({ type: 'tool_execution_end', isError: false, toolName: 'bash' });
+    fire({ type: 'tool_execution_end', isError: true, toolName: 'bash' });
+
+    expect(process.stderr.write).toHaveBeenCalledWith(expect.stringContaining('✓ bash done'));
+    expect(process.stderr.write).toHaveBeenCalledWith(expect.stringContaining('✗ bash failed'));
+    await session.dispose();
+  });
+
+  it('handles turn_start and turn_end (verbose=true)', async () => {
+    const session = await createSession('/cwd');
+    await session.prompt('task');
+
+    fire({ type: 'turn_start' });
+    fire({ type: 'turn_end' });
+
+    expect(process.stderr.write).toHaveBeenCalledWith('[pi] turn start\n');
+    expect(process.stderr.write).toHaveBeenCalledWith('[pi] turn complete\n');
+    await session.dispose();
+  });
+
+  it('suppresses turn_start and turn_end when verbose=false', async () => {
+    const session = await createSession('/cwd', undefined, undefined, undefined, false);
+    await session.prompt('task');
+
+    fire({ type: 'turn_start' });
+    fire({ type: 'turn_end' });
+
+    expect(process.stderr.write).not.toHaveBeenCalledWith('[pi] turn start\n');
+    await session.dispose();
+  });
+
+  it('handles compaction_start and all compaction_end variants', async () => {
+    const session = await createSession('/cwd');
+    await session.prompt('task');
+
+    fire({ type: 'compaction_start', reason: 'context full' });
+    fire({ type: 'compaction_end', result: { tokensBefore: 1000, summary: 'x'.repeat(200) } });
+    fire({ type: 'compaction_end', result: null, aborted: true });
+    fire({ type: 'compaction_end', result: null, aborted: false });
+
+    expect(process.stderr.write).toHaveBeenCalledWith(
+      expect.stringContaining('compacting context'),
+    );
+    expect(process.stderr.write).toHaveBeenCalledWith(expect.stringContaining('compaction done'));
+    expect(process.stderr.write).toHaveBeenCalledWith(
+      expect.stringContaining('compaction aborted'),
+    );
+    expect(process.stderr.write).toHaveBeenCalledWith(expect.stringContaining('compaction failed'));
+    await session.dispose();
+  });
+
+  it('handles auto_retry_start and auto_retry_end', async () => {
+    const session = await createSession('/cwd');
+    await session.prompt('task');
+
+    fire({ type: 'auto_retry_start', attempt: 1, maxAttempts: 3, delayMs: 500 });
+    fire({ type: 'auto_retry_end', success: true, attempt: 1 });
+    fire({ type: 'auto_retry_end', success: false, attempt: 2 });
+
+    expect(process.stderr.write).toHaveBeenCalledWith(expect.stringContaining('retrying'));
+    expect(process.stderr.write).toHaveBeenCalledWith(expect.stringContaining('retry succeeded'));
+    expect(process.stderr.write).toHaveBeenCalledWith(expect.stringContaining('retry failed'));
+    await session.dispose();
+  });
+
+  it('handles agent_start and agent_end (verbose=true and false)', async () => {
+    const session = await createSession('/cwd');
+    await session.prompt('task');
+
+    fire({ type: 'agent_start' });
+    fire({ type: 'agent_end' });
+
+    expect(process.stderr.write).toHaveBeenCalledWith(expect.stringContaining('agent starting'));
+    expect(process.stderr.write).toHaveBeenCalledWith(expect.stringContaining('agent done'));
+    await session.dispose();
+
+    const session2 = await createSession('/cwd', undefined, undefined, undefined, false);
+    vi.mocked(process.stderr.write).mockClear();
+    await session2.prompt('task');
+    fire({ type: 'agent_start' });
+    fire({ type: 'agent_end' });
+    expect(process.stderr.write).not.toHaveBeenCalledWith(
+      expect.stringContaining('agent starting'),
+    );
+    await session2.dispose();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// enforceSearchTools extension
+// ---------------------------------------------------------------------------
+
+describe('enforceSearchTools extension', () => {
+  let piHandlers: Record<string, (...args: any[]) => any> = {};
+
+  beforeEach(async () => {
+    piHandlers = {};
+
+    vi.mocked(createAgentSessionServices).mockImplementation(async (opts: any) => {
+      const factories: Array<(pi: any) => void> =
+        opts?.resourceLoaderOptions?.extensionFactories ?? [];
+      const mockPi = {
+        on: (event: string, handler: (...args: any[]) => any) => {
+          piHandlers[event] = handler;
+        },
+      };
+      for (const factory of factories) factory(mockPi);
+      return { diagnostics: {} } as any;
+    });
+
+    await createSession('/cwd');
+  });
+
+  it('blocks the native grep tool', async () => {
+    const result = await piHandlers['tool_call']?.({ toolName: 'grep', input: {} }, {});
+    expect(result).toEqual({ block: true, reason: expect.stringContaining('ag') });
+  });
+
+  it('blocks the native find tool', async () => {
+    const result = await piHandlers['tool_call']?.({ toolName: 'find', input: {} }, {});
+    expect(result).toEqual({ block: true, reason: expect.stringContaining('fd') });
+  });
+
+  it('blocks grep inside a bash command', async () => {
+    const result = await piHandlers['tool_call']?.(
+      {
+        toolName: 'bash',
+        input: { command: 'grep foo bar.ts' },
+      },
+      {},
+    );
+    expect(result).toEqual({ block: true, reason: expect.stringContaining('ag') });
+  });
+
+  it('blocks find inside a bash command', async () => {
+    const result = await piHandlers['tool_call']?.(
+      {
+        toolName: 'bash',
+        input: { command: 'find . -name "*.ts"' },
+      },
+      {},
+    );
+    expect(result).toEqual({ block: true, reason: expect.stringContaining('fd') });
+  });
+
+  it('blocks bash commands using both grep and find', async () => {
+    const result = await piHandlers['tool_call']?.(
+      {
+        toolName: 'bash',
+        input: { command: 'grep foo . && find . -name bar' },
+      },
+      {},
+    );
+    expect(result).toMatchObject({ block: true });
+    expect((result as any).reason).toContain('ag');
+    expect((result as any).reason).toContain('fd');
+  });
+
+  it('passes through bash commands without grep or find', async () => {
+    const result = await piHandlers['tool_call']?.(
+      {
+        toolName: 'bash',
+        input: { command: 'ls -la && cat file.ts' },
+      },
+      {},
+    );
+    expect(result).toBeUndefined();
+  });
+
+  it('passes through other tool calls', async () => {
+    const result = await piHandlers['tool_call']?.({ toolName: 'read', input: {} }, {});
+    expect(result).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// verify() — error recovery (catch block on non-last attempt)
+// ---------------------------------------------------------------------------
+
+describe('verify() prompt error on a non-last attempt', () => {
+  it('falls through to retry when the verify prompt throws before the final attempt', async () => {
+    const session = await createSession('/cwd');
+    await session.prompt('do work');
+
+    let callIdx = 0;
+    mockRuntime.session.prompt.mockImplementation(async () => {
+      const idx = callIdx++;
+      if (idx === 0) throw new Error('transient network error');
+      if (idx === 1) lastSubscribeCb?.(textDelta('')); // retry main prompt
+      if (idx === 2) lastSubscribeCb?.(textDelta('VERDICT: PASS'));
+    });
+
+    await expect(session.verify('check', { maxRetries: 2 })).resolves.toBeUndefined();
+    await session.dispose();
+  });
+
+  it('rethrows on the final attempt when the verify prompt errors', async () => {
+    const session = await createSession('/cwd');
+    await session.prompt('do work');
+
+    mockRuntime.session.prompt.mockRejectedValue(new Error('fatal error'));
+
+    await expect(session.verify('check', { maxRetries: 1 })).rejects.toThrow('fatal error');
+    await session.dispose();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Worktree integration
+// ---------------------------------------------------------------------------
+
+describe('worktree integration', () => {
+  it('creates a worktree and cleans it up on dispose', async () => {
+    const mockCleanup = vi.fn();
+    vi.mocked(createWorktree).mockResolvedValue({ path: '/tmp/wt-1', cleanup: mockCleanup });
+
+    const session = await createSession('/cwd', undefined, undefined, { ref: 'main' });
+    await session.dispose();
+
+    expect(createWorktree).toHaveBeenCalledWith('/cwd', { ref: 'main' });
+    expect(mockCleanup).toHaveBeenCalledTimes(1);
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining('/tmp/wt-1'));
   });
 });
