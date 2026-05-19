@@ -2,11 +2,13 @@
 
 - This is a coding agent that uses the pi (pi.dev) SDK to create automated coding sessions called "missions".
 - These "missions" run inside code repo's called "workspaces".
-- The agent stores (through the sdk) persistent memory in a "wiki".
 
 ## Project structure
 
 ```
+.pi/
+  agent/
+    sessions/ # pi session logs
 src/
   framework/
     mission.ts     # mission() — defines a mission with config (params, escalation, worktree)
@@ -21,7 +23,6 @@ src/
     run-mission.ts   # CLI entry point
 wiki/                # persistent codebase knowledge (Obsidian vault)
 workspaces/          # target code repos (git clones)
-.logs/               # mission run history
 ui/                  # Next.js dashboard for browsing mission logs
 ```
 

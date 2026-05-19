@@ -1,11 +1,14 @@
 import {
   type AgentSessionRuntime,
   type CreateAgentSessionRuntimeFactory,
+  type ExtensionAPI,
+  DefaultResourceLoader,
   SessionManager,
   createAgentSessionFromServices,
   createAgentSessionRuntime,
   createAgentSessionServices,
   getAgentDir,
+  isToolCallEventType,
 } from '@earendil-works/pi-coding-agent';
 import {
   resolveEscalation,
@@ -113,15 +116,46 @@ These guidelines are working if: fewer unnecessary changes in diffs, fewer rewri
 - Add docbloc to the functions you write.
 `;
 
+/**
+ * Enforce ag/fd over grep/find.
+ * Blocks bash tool calls using grep or find, forcing the agent to use ag and fd instead.
+ */
+function enforceSearchTools(pi: ExtensionAPI) {
+  pi.on('tool_call', async (event, _ctx) => {
+    if (!isToolCallEventType('bash', event)) return;
+
+    const cmd = event.input.command;
+    const usesGrep = /\bgrep\b/.test(cmd);
+    const usesFind = /\bfind\b/.test(cmd);
+
+    if (!usesGrep && !usesFind) return;
+
+    const reasons: string[] = [];
+    if (usesGrep) reasons.push('`grep` is not allowed — use `ag <pattern> [path]` instead');
+    if (usesFind) reasons.push('`find` is not allowed — use `fd <pattern> [path]` instead');
+
+    return { block: true, reason: reasons.join('; ') };
+  });
+}
+
 async function buildRuntime(cwd: string, signal?: AbortSignal): Promise<AgentSessionRuntime> {
   const factory: CreateAgentSessionRuntimeFactory = async ({
     cwd: effectiveCwd,
     sessionManager,
     sessionStartEvent,
   }) => {
+    // Configure resource loader with custom system prompt and enforce-search-tools extension
+    const loader = new DefaultResourceLoader({
+      cwd: effectiveCwd,
+      agentDir: getAgentDir(),
+      systemPromptOverride: () => SYSTEM_PROMPT,
+      extensionFactories: [enforceSearchTools],
+    });
+    await loader.reload();
+
     const services = await createAgentSessionServices({
       cwd: effectiveCwd,
-      resourceLoaderOptions: { systemPrompt: SYSTEM_PROMPT },
+      resourceLoader: loader,
     });
     return {
       ...(await createAgentSessionFromServices({ services, sessionManager, sessionStartEvent })),

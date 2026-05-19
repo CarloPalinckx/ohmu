@@ -60,7 +60,7 @@ export default async function HomePage() {
 
       {groups.length === 0 ? (
         <p className="text-muted-foreground text-sm">
-          No sessions found in <code className="font-mono">~/.pi/agent/sessions/</code>.
+          No sessions found in <code className="font-mono">.pi/agent/sessions/</code> or <code className="font-mono">~/.pi/agent/sessions/</code>.
         </p>
       ) : (
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">

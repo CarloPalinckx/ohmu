@@ -11,6 +11,7 @@
     "format": "prettier --write src/",
     "start": "tsx src/scripts/run-mission.ts work-on-github-project",
     "mission": "tsx src/scripts/run-mission.ts",
+    "mission:juice-shop-bola": "tsx src/scripts/run-mission.ts fix-vulnerability --cwd=/home/ohmu/workspaces/juice-shop --identifier=CWE-639 --description='Broken Object Level Authorization (BOLA) in /api/orders/:id/delivery toggle endpoint. The toggleDeliveryStatus function in routes/orderHistory.ts does not verify that the authenticated user owns the order before allowing them to change its delivery status. An attacker can modify any order delivery status by providing a different order ID. Location: routes/orderHistory.ts - toggleDeliveryStatus function. Fix: Add authorization check to ensure the order belongs to the logged-in user before allowing status changes'",
     "generate-templates": "tsx src/scripts/generate-templates.ts",
     "dashboard": "cd ui && npm run dev",
     "prepare": "husky"

@@ -1,3 +1,7 @@
+**IMPORTANT**
+- instead of using `grep`, prefer `gd` where possible
+- instead of using `find`, prefer `fd` where possible
+
 
 Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
 
@@ -63,5 +67,3 @@ These guidelines are working if: fewer unnecessary changes in diffs, fewer rewri
 ## Preferences
 
 - Add docbloc to the functions you write.
-- instead of using `grep`, prefer `gd` where possible
-- instead of using `find`, prefer `fd` where possible

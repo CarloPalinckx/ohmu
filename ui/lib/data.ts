@@ -4,9 +4,16 @@ import os from "node:os";
 import path from "node:path";
 import type { Session, TranscriptEvent } from "./types";
 
-const SESSIONS_DIR =
-  process.env.PI_SESSIONS_DIR ??
-  path.join(os.homedir(), ".pi", "agent", "sessions");
+// Resolve sessions directory: try repo root first, then home directory
+const SESSIONS_DIR = (() => {
+  // Try repo root: ../{{.pi/agent/sessions (relative to ui directory)
+  const repoRoot = path.resolve(__dirname, "../..", ".pi", "agent", "sessions");
+  if (existsSync(repoRoot)) {
+    return repoRoot;
+  }
+  // Fall back to home directory
+  return path.join(os.homedir(), ".pi", "agent", "sessions");
+})();
 
 /**
  * Extract the UUID from a session filename.
